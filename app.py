@@ -3,26 +3,13 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import plotly.figure_factory as ff
 import time
 import json
 import re
 import hashlib
-import pickle
-import os
 from datetime import datetime, timedelta
 import asyncio
 from typing import Dict, List, Tuple, Optional
-
-# Evaluation metrics
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report, precision_recall_fscore_support
-)
-from sklearn.preprocessing import LabelEncoder
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 # API clients
 try:
@@ -43,175 +30,22 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
-class EvaluationMetrics:
-    """Comprehensive evaluation metrics for classification models"""
+class SimpleCacheManager:
+    """Lightweight caching system"""
     
     def __init__(self):
-        self.age_groups = ['teens', 'young_adults', 'adults', 'seniors']
-        self.confidence_levels = ['low', 'medium', 'high']
-    
-    def calculate_metrics(self, y_true: List, y_pred: List, labels: List = None) -> Dict:
-        """Calculate comprehensive classification metrics"""
-        
-        if not labels:
-            labels = list(set(y_true + y_pred))
-        
-        # Basic metrics
-        accuracy = accuracy_score(y_true, y_pred)
-        
-        # Per-class metrics
-        precision_macro = precision_score(y_true, y_pred, average='macro', zero_division=0)
-        recall_macro = recall_score(y_true, y_pred, average='macro', zero_division=0)
-        f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
-        
-        # Weighted metrics (accounts for class imbalance)
-        precision_weighted = precision_score(y_true, y_pred, average='weighted', zero_division=0)
-        recall_weighted = recall_score(y_true, y_pred, average='weighted', zero_division=0)
-        f1_weighted = f1_score(y_true, y_pred, average='weighted', zero_division=0)
-        
-        # Per-class detailed metrics
-        precision_per_class, recall_per_class, f1_per_class, support_per_class = \
-            precision_recall_fscore_support(y_true, y_pred, labels=labels, zero_division=0)
-        
-        # Confusion matrix
-        cm = confusion_matrix(y_true, y_pred, labels=labels)
-        
-        return {
-            'accuracy': accuracy,
-            'precision_macro': precision_macro,
-            'recall_macro': recall_macro,
-            'f1_macro': f1_macro,
-            'precision_weighted': precision_weighted,
-            'recall_weighted': recall_weighted,
-            'f1_weighted': f1_weighted,
-            'confusion_matrix': cm,
-            'per_class_metrics': {
-                'precision': dict(zip(labels, precision_per_class)),
-                'recall': dict(zip(labels, recall_per_class)),
-                'f1': dict(zip(labels, f1_per_class)),
-                'support': dict(zip(labels, support_per_class))
-            },
-            'labels': labels,
-            'classification_report': classification_report(y_true, y_pred, labels=labels, output_dict=True)
-        }
-    
-    def plot_confusion_matrix(self, cm: np.ndarray, labels: List[str], title: str = "Confusion Matrix") -> go.Figure:
-        """Create interactive confusion matrix plot"""
-        
-        # Normalize confusion matrix
-        cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        cm_normalized = np.nan_to_num(cm_normalized)  # Replace NaN with 0
-        
-        # Create annotations
-        annotations = []
-        for i in range(len(labels)):
-            for j in range(len(labels)):
-                annotations.append({
-                    'x': j, 'y': i,
-                    'text': f"{cm[i,j]}<br>({cm_normalized[i,j]:.2%})",
-                    'showarrow': False,
-                    'font': {'color': 'white' if cm_normalized[i,j] > 0.5 else 'black'}
-                })
-        
-        fig = go.Figure(data=go.Heatmap(
-            z=cm_normalized,
-            x=labels,
-            y=labels,
-            colorscale='Blues',
-            colorbar=dict(title="Proportion"),
-            hoverongaps=False
-        ))
-        
-        fig.update_layout(
-            title=title,
-            xaxis_title="Predicted",
-            yaxis_title="Actual",
-            annotations=annotations,
-            width=500,
-            height=500
-        )
-        
-        return fig
-    
-    def plot_metrics_comparison(self, metrics_dict: Dict) -> go.Figure:
-        """Create metrics comparison chart"""
-        
-        models = list(metrics_dict.keys())
-        metrics = ['accuracy', 'precision_macro', 'recall_macro', 'f1_macro']
-        
-        fig = go.Figure()
-        
-        for metric in metrics:
-            values = [metrics_dict[model].get(metric, 0) for model in models]
-            fig.add_trace(go.Bar(
-                name=metric.replace('_', ' ').title(),
-                x=models,
-                y=values,
-                text=[f"{v:.3f}" for v in values],
-                textposition='auto'
-            ))
-        
-        fig.update_layout(
-            title="Model Performance Comparison",
-            xaxis_title="Models",
-            yaxis_title="Score",
-            barmode='group',
-            yaxis=dict(range=[0, 1])
-        )
-        
-        return fig
-    
-    def plot_per_class_metrics(self, metrics: Dict, metric_type: str = 'f1') -> go.Figure:
-        """Plot per-class performance metrics"""
-        
-        labels = metrics['labels']
-        values = [metrics['per_class_metrics'][metric_type][label] for label in labels]
-        
-        fig = go.Figure(data=go.Bar(
-            x=labels,
-            y=values,
-            text=[f"{v:.3f}" for v in values],
-            textposition='auto'
-        ))
-        
-        fig.update_layout(
-            title=f"Per-Class {metric_type.upper()} Scores",
-            xaxis_title="Classes",
-            yaxis_title=f"{metric_type.upper()} Score",
-            yaxis=dict(range=[0, 1])
-        )
-        
-        return fig
-
-class CacheManager:
-    """Advanced caching system for API responses and computations"""
-    
-    def __init__(self, cache_dir: str = ".cache"):
-        self.cache_dir = Path(cache_dir) if 'Path' in globals() else None
-        if self.cache_dir:
-            self.cache_dir.mkdir(exist_ok=True)
-        
-        self.stats = {
-            'api_hits': 0,
-            'api_misses': 0,
-            'cost_saved': 0.0
-        }
-        
         self.api_cache = {}
-        self.feature_cache = {}
+        self.stats = {'api_hits': 0, 'api_misses': 0, 'cost_saved': 0.0}
 
     def _generate_text_hash(self, text: str, model: str = "") -> str:
-        """Generate hash for text + model combination"""
         combined = f"{text.lower().strip()}|{model}"
         return hashlib.md5(combined.encode()).hexdigest()
 
     def get_api_response(self, text: str, model: str) -> Optional[Dict]:
-        """Get cached API response"""
         cache_key = self._generate_text_hash(text, model)
         
         if cache_key in self.api_cache:
             entry = self.api_cache[cache_key]
-            # Simple expiration check (24 hours)
             if datetime.now() - entry['timestamp'] < timedelta(hours=24):
                 self.stats['api_hits'] += 1
                 self.stats['cost_saved'] += entry.get('cost', 0.002)
@@ -223,7 +57,6 @@ class CacheManager:
         return None
 
     def cache_api_response(self, text: str, model: str, response: Dict, cost: float = 0.002):
-        """Cache API response"""
         cache_key = self._generate_text_hash(text, model)
         
         self.api_cache[cache_key] = {
@@ -234,7 +67,6 @@ class CacheManager:
         }
 
     def get_cache_stats(self) -> Dict:
-        """Get cache performance statistics"""
         total_api = self.stats['api_hits'] + self.stats['api_misses']
         api_hit_rate = (self.stats['api_hits'] / max(total_api, 1)) * 100
         
@@ -242,36 +74,21 @@ class CacheManager:
             'api_hit_rate': api_hit_rate,
             'total_api_calls_saved': self.stats['api_hits'],
             'cost_saved': self.stats['cost_saved'],
-            'cache_sizes': {
-                'api_responses': len(self.api_cache),
-                'features': len(self.feature_cache)
-            }
+            'cache_sizes': {'api_responses': len(self.api_cache)}
         }
 
-class EnhancedSocialMediaClassifier:
-    """Enhanced classifier with evaluation metrics"""
+class SimpleSocialMediaClassifier:
+    """Simplified classifier without problematic dependencies"""
     
     def __init__(self):
-        self.models = {
-            'openai': None,
-            'anthropic': None,
-            'llama3': None
-        }
+        self.models = {'openai': None, 'anthropic': None, 'llama3': None}
         self.api_calls = {'openai': 0, 'anthropic': 0, 'llama3': 0}
         self.costs = {'openai': 0.0, 'anthropic': 0.0, 'llama3': 0.0}
         
-        self.cost_per_1k = {
-            'openai': 0.002,
-            'anthropic': 0.003,
-            'llama3': 0.0005
-        }
-        
-        self.cache = CacheManager()
-        self.evaluator = EvaluationMetrics()
+        self.cost_per_1k = {'openai': 0.002, 'anthropic': 0.003, 'llama3': 0.0005}
+        self.cache = SimpleCacheManager()
 
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_endpoint: str = None):
-        """Setup API clients"""
-        
         if openai_key and OPENAI_AVAILABLE:
             try:
                 self.models['openai'] = openai.OpenAI(api_key=openai_key)
@@ -294,8 +111,6 @@ class EnhancedSocialMediaClassifier:
                 st.error(f"❌ Llama 3 setup failed: {e}")
 
     def create_classification_prompt(self, text: str, model_type: str) -> str:
-        """Create optimized prompts for different models"""
-        
         base_prompt = f"""Analyze this social media post and classify the author's demographics and psychological state.
 
 CLASSIFICATION TASK:
@@ -354,8 +169,6 @@ SCORE: [0.0-1.0]"""
         return base_prompt
 
     async def classify_with_caching(self, text: str, model: str) -> Dict:
-        """Classify with intelligent caching"""
-        
         cached_result = self.cache.get_api_response(text, model)
         if cached_result:
             return cached_result
@@ -376,7 +189,6 @@ SCORE: [0.0-1.0]"""
         return result
 
     async def _classify_with_openai(self, text: str) -> Dict:
-        """OpenAI classification"""
         if not self.models['openai']:
             return {'error': 'OpenAI not configured'}
 
@@ -412,7 +224,6 @@ SCORE: [0.0-1.0]"""
             return {'error': f'OpenAI error: {str(e)}'}
 
     async def _classify_with_anthropic(self, text: str) -> Dict:
-        """Anthropic classification"""
         if not self.models['anthropic']:
             return {'error': 'Anthropic not configured'}
 
@@ -436,15 +247,17 @@ SCORE: [0.0-1.0]"""
             return {'error': f'Anthropic error: {str(e)}'}
 
     async def _classify_with_llama3(self, text: str) -> Dict:
-        """Llama 3 classification"""
         if not self.models['llama3'] or not REQUESTS_AVAILABLE:
             return {'error': 'Llama 3 not configured'}
 
         try:
             prompt = self.create_classification_prompt(text, 'llama3')
             
+            # Get API key from Streamlit secrets or use the provided endpoint
+            api_key = st.secrets.get('TOGETHER_API_KEY', llama3_endpoint if isinstance(llama3_endpoint, str) else '')
+            
             headers = {
-                "Authorization": f"Bearer {st.secrets.get('TOGETHER_API_KEY', '')}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
             
@@ -475,8 +288,6 @@ SCORE: [0.0-1.0]"""
             return {'error': f'Llama 3 error: {str(e)}'}
 
     def parse_response(self, content: str, model_type: str) -> Dict:
-        """Parse model responses into standardized format"""
-        
         result = {
             'model': f'{model_type.title()}',
             'age_group': 'unknown',
@@ -531,624 +342,842 @@ SCORE: [0.0-1.0]"""
         
         return result
 
-    def create_synthetic_ground_truth(self, df: pd.DataFrame, sample_size: int = 100) -> pd.DataFrame:
-        """Create synthetic ground truth labels for evaluation"""
+    def calculate_simple_accuracy(self, results_df: pd.DataFrame) -> Dict:
+        """Simple accuracy calculation without external dependencies"""
         
-        # Sample data for ground truth creation
-        sample_df = df.sample(n=min(sample_size, len(df)), random_state=42).copy()
+        total_posts = len(results_df)
+        if total_posts == 0:
+            return {'error': 'No results to evaluate'}
         
-        # Simple heuristic-based ground truth (for demo purposes)
-        # In real scenarios, you'd have human-annotated labels
+        # Simple distribution analysis
+        age_dist = results_df['age_group'].value_counts()
+        conf_dist = results_df['confidence_level'].value_counts()
         
-        sample_df['true_age_group'] = 'unknown'
-        sample_df['true_confidence_level'] = 'unknown'
+        # Average confidence score
+        avg_confidence = results_df['confidence_score'].mean()
         
-        for idx, row in sample_df.iterrows():
-            if 'Post Content' in row:
-                text = str(row['Post Content']).lower()
-                
-                # Age group heuristics
-                if any(word in text for word in ['school', 'homework', 'class', 'teacher', 'omg', 'literally']):
-                    sample_df.at[idx, 'true_age_group'] = 'teens'
-                elif any(word in text for word in ['college', 'job', 'career', 'interview', 'apartment']):
-                    sample_df.at[idx, 'true_age_group'] = 'young_adults'
-                elif any(word in text for word in ['kids', 'family', 'mortgage', 'parenting', 'work']):
-                    sample_df.at[idx, 'true_age_group'] = 'adults'
-                elif any(word in text for word in ['retirement', 'grandchildren', 'health', 'doctor']):
-                    sample_df.at[idx, 'true_age_group'] = 'seniors'
-                else:
-                    sample_df.at[idx, 'true_age_group'] = 'young_adults'  # default
-                
-                # Confidence level heuristics
-                if any(word in text for word in ['not good', 'terrible', 'awful', 'dont know', 'scared', 'worried']):
-                    sample_df.at[idx, 'true_confidence_level'] = 'low'
-                elif any(word in text for word in ['confident', 'sure', 'excellent', 'great', 'amazing', 'proud']):
-                    sample_df.at[idx, 'true_confidence_level'] = 'high'
-                else:
-                    sample_df.at[idx, 'true_confidence_level'] = 'medium'  # default
-        
-        return sample_df
-
-    def evaluate_model_performance(self, results_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> Dict:
-        """Evaluate model performance against ground truth"""
-        
-        # Merge results with ground truth
-        merged_df = results_df.merge(
-            ground_truth_df[['post_id', 'true_age_group', 'true_confidence_level']], 
-            on='post_id', 
-            how='inner'
-        )
-        
-        if len(merged_df) == 0:
-            return {'error': 'No matching posts found between results and ground truth'}
-        
-        # Calculate metrics for age group classification
-        age_metrics = self.evaluator.calculate_metrics(
-            merged_df['true_age_group'].tolist(),
-            merged_df['age_group'].tolist(),
-            self.evaluator.age_groups
-        )
-        
-        # Calculate metrics for confidence level classification
-        conf_metrics = self.evaluator.calculate_metrics(
-            merged_df['true_confidence_level'].tolist(),
-            merged_df['confidence_level'].tolist(),
-            self.evaluator.confidence_levels
-        )
+        # Model performance summary
+        model_counts = results_df['model'].value_counts() if 'model' in results_df.columns else {}
         
         return {
-            'age_group_metrics': age_metrics,
-            'confidence_level_metrics': conf_metrics,
-            'sample_size': len(merged_df),
-            'merged_data': merged_df
+            'total_analyzed': total_posts,
+            'age_distribution': age_dist.to_dict(),
+            'confidence_distribution': conf_dist.to_dict(),
+            'average_confidence_score': avg_confidence,
+            'most_common_age': age_dist.index[0] if len(age_dist) > 0 else 'unknown',
+            'most_common_confidence': conf_dist.index[0] if len(conf_dist) > 0 else 'unknown',
+            'model_usage': model_counts.to_dict() if hasattr(model_counts, 'to_dict') else {}
         }
 
 @st.cache_data(ttl=1800)
 def load_data_cached(file_path: str = None, uploaded_file = None) -> pd.DataFrame:
-    """Cached data loading function"""
-    if uploaded_file:
-        return pd.read_csv(uploaded_file)
-    elif file_path:
-        return pd.read_csv(file_path)
-    else:
-        try:
-            return pd.read_csv('data/social_media_analytics.csv')
-        except FileNotFoundError:
+    """Load data with error handling"""
+    try:
+        if uploaded_file:
+            return pd.read_csv(uploaded_file)
+        elif file_path:
+            return pd.read_csv(file_path)
+        else:
+            # Try common file locations
+            possible_paths = [
+                'data/social_media_analytics.csv',
+                'social_media_analytics.csv',
+                'social-media-analytics.csv'
+            ]
+            
+            for path in possible_paths:
+                try:
+                    return pd.read_csv(path)
+                except FileNotFoundError:
+                    continue
+            
             return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame()
 
-def display_evaluation_dashboard(evaluation_results: Dict):
-    """Display comprehensive evaluation dashboard"""
+def create_sample_data() -> pd.DataFrame:
+    """Create sample data if no CSV is available"""
     
-    st.subheader("📊 Model Evaluation Dashboard")
+    sample_posts = [
+        {
+            'Post ID': 1,
+            'Platform': 'Twitter',
+            'User ID': 1001,
+            'Post Content': 'omg school is literally so hard everyone else gets it but i dont understand math',
+            'Post Date': '2024-01-15',
+            'Likes': 23,
+            'Comments': 5,
+            'Shares': 2
+        },
+        {
+            'Post ID': 2,
+            'Platform': 'Instagram',
+            'User ID': 1002,
+            'Post Content': 'job interview tomorrow feeling confident about my career goals',
+            'Post Date': '2024-01-16',
+            'Likes': 45,
+            'Comments': 8,
+            'Shares': 3
+        },
+        {
+            'Post ID': 3,
+            'Platform': 'Facebook',
+            'User ID': 1003,
+            'Post Content': 'kids are growing up so fast proud of how well theyre doing in school',
+            'Post Date': '2024-01-17',
+            'Likes': 67,
+            'Comments': 12,
+            'Shares': 5
+        },
+        {
+            'Post ID': 4,
+            'Platform': 'Twitter',
+            'User ID': 1004,
+            'Post Content': 'retirement planning has been rewarding grandchildren visited yesterday',
+            'Post Date': '2024-01-18',
+            'Likes': 34,
+            'Comments': 6,
+            'Shares': 1
+        },
+        {
+            'Post ID': 5,
+            'Platform': 'Instagram',
+            'User ID': 1005,
+            'Post Content': 'not sure if college is right for me everyone seems more prepared',
+            'Post Date': '2024-01-19',
+            'Likes': 12,
+            'Comments': 3,
+            'Shares': 0
+        }
+    ]
     
-    if 'error' in evaluation_results:
-        st.error(f"Evaluation Error: {evaluation_results['error']}")
-        return
-    
-    age_metrics = evaluation_results['age_group_metrics']
-    conf_metrics = evaluation_results['confidence_level_metrics']
-    
-    # Overview metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Sample Size", evaluation_results['sample_size'])
-    with col2:
-        st.metric("Age Accuracy", f"{age_metrics['accuracy']:.3f}")
-    with col3:
-        st.metric("Confidence Accuracy", f"{conf_metrics['accuracy']:.3f}")
-    with col4:
-        avg_f1 = (age_metrics['f1_weighted'] + conf_metrics['f1_weighted']) / 2
-        st.metric("Avg F1-Score", f"{avg_f1:.3f}")
-    
-    # Detailed metrics tables
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🎯 Age Group Classification")
-        
-        # Metrics table
-        age_metrics_df = pd.DataFrame({
-            'Metric': ['Accuracy', 'Precision (Macro)', 'Recall (Macro)', 'F1-Score (Macro)', 
-                      'Precision (Weighted)', 'Recall (Weighted)', 'F1-Score (Weighted)'],
-            'Score': [
-                age_metrics['accuracy'],
-                age_metrics['precision_macro'],
-                age_metrics['recall_macro'],
-                age_metrics['f1_macro'],
-                age_metrics['precision_weighted'],
-                age_metrics['recall_weighted'],
-                age_metrics['f1_weighted']
-            ]
-        })
-        age_metrics_df['Score'] = age_metrics_df['Score'].round(3)
-        st.dataframe(age_metrics_df, use_container_width=True)
-        
-        # Per-class metrics
-        st.subheader("Per-Class Metrics (Age)")
-        age_per_class_df = pd.DataFrame(age_metrics['per_class_metrics']).T
-        age_per_class_df = age_per_class_df.round(3)
-        st.dataframe(age_per_class_df, use_container_width=True)
-    
-    with col2:
-        st.subheader("💭 Confidence Level Classification")
-        
-        # Metrics table
-        conf_metrics_df = pd.DataFrame({
-            'Metric': ['Accuracy', 'Precision (Macro)', 'Recall (Macro)', 'F1-Score (Macro)', 
-                      'Precision (Weighted)', 'Recall (Weighted)', 'F1-Score (Weighted)'],
-            'Score': [
-                conf_metrics['accuracy'],
-                conf_metrics['precision_macro'],
-                conf_metrics['recall_macro'],
-                conf_metrics['f1_macro'],
-                conf_metrics['precision_weighted'],
-                conf_metrics['recall_weighted'],
-                conf_metrics['f1_weighted']
-            ]
-        })
-        conf_metrics_df['Score'] = conf_metrics_df['Score'].round(3)
-        st.dataframe(conf_metrics_df, use_container_width=True)
-        
-        # Per-class metrics
-        st.subheader("Per-Class Metrics (Confidence)")
-        conf_per_class_df = pd.DataFrame(conf_metrics['per_class_metrics']).T
-        conf_per_class_df = conf_per_class_df.round(3)
-        st.dataframe(conf_per_class_df, use_container_width=True)
-    
-    # Confusion matrices
-    st.subheader("🔄 Confusion Matrices")
-    
-    col1, col2 = st.columns(2)
-    
-    evaluator = EvaluationMetrics()
-    
-    with col1:
-        age_cm_fig = evaluator.plot_confusion_matrix(
-            age_metrics['confusion_matrix'],
-            age_metrics['labels'],
-            "Age Group Classification"
-        )
-        st.plotly_chart(age_cm_fig, use_container_width=True)
-    
-    with col2:
-        conf_cm_fig = evaluator.plot_confusion_matrix(
-            conf_metrics['confusion_matrix'],
-            conf_metrics['labels'],
-            "Confidence Level Classification"
-        )
-        st.plotly_chart(conf_cm_fig, use_container_width=True)
-    
-    # Per-class F1 scores
-    st.subheader("📈 Per-Class Performance")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        age_f1_fig = evaluator.plot_per_class_metrics(age_metrics, 'f1')
-        age_f1_fig.update_layout(title="Age Group F1-Scores")
-        st.plotly_chart(age_f1_fig, use_container_width=True)
-    
-    with col2:
-        conf_f1_fig = evaluator.plot_per_class_metrics(conf_metrics, 'f1')
-        conf_f1_fig.update_layout(title="Confidence Level F1-Scores")
-        st.plotly_chart(conf_f1_fig, use_container_width=True)
-    
-    # Classification reports
-    with st.expander("📋 Detailed Classification Reports"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Age Group Report")
-            age_report_df = pd.DataFrame(age_metrics['classification_report']).T
-            age_report_df = age_report_df.round(3)
-            st.dataframe(age_report_df, use_container_width=True)
-        
-        with col2:
-            st.subheader("Confidence Level Report")
-            conf_report_df = pd.DataFrame(conf_metrics['classification_report']).T
-            conf_report_df = conf_report_df.round(3)
-            st.dataframe(conf_report_df, use_container_width=True)
+    return pd.DataFrame(sample_posts)
 
-def compare_model_performance(model_results: Dict[str, Dict]) -> None:
-    """Compare performance across multiple models"""
+def display_cache_dashboard(cache_manager):
+    """Display cache performance in sidebar"""
     
-    st.subheader("🏆 Model Performance Comparison")
+    stats = cache_manager.get_cache_stats()
     
-    if len(model_results) < 2:
-        st.info("Need at least 2 model results for comparison. Run evaluation on multiple models first.")
-        return
+    st.sidebar.subheader("🚀 Cache Performance")
+    st.sidebar.metric("Hit Rate", f"{stats['api_hit_rate']:.1f}%")
+    st.sidebar.metric("API Calls Saved", stats['total_api_calls_saved'])
+    st.sidebar.metric("Cost Saved", f"${stats['cost_saved']:.3f}")
+    st.sidebar.metric("Cached Responses", stats['cache_sizes']['api_responses'])
     
-    # Prepare comparison data
-    comparison_data = []
-    
-    for model_name, results in model_results.items():
-        if 'error' not in results:
-            age_metrics = results['age_group_metrics']
-            conf_metrics = results['confidence_level_metrics']
-            
-            comparison_data.append({
-                'Model': model_name,
-                'Age Accuracy': age_metrics['accuracy'],
-                'Age F1 (Macro)': age_metrics['f1_macro'],
-                'Age F1 (Weighted)': age_metrics['f1_weighted'],
-                'Conf Accuracy': conf_metrics['accuracy'],
-                'Conf F1 (Macro)': conf_metrics['f1_macro'],
-                'Conf F1 (Weighted)': conf_metrics['f1_weighted'],
-                'Sample Size': results['sample_size']
-            })
-    
-    if not comparison_data:
-        st.warning("No valid model results found for comparison.")
-        return
-    
-    comparison_df = pd.DataFrame(comparison_data)
-    
-    # Display comparison table
-    st.dataframe(comparison_df.round(3), use_container_width=True)
-    
-    # Create comparison charts
-    evaluator = EvaluationMetrics()
-    
-    # Metrics comparison chart
-    metrics_dict = {}
-    for model_name, results in model_results.items():
-        if 'error' not in results:
-            age_metrics = results['age_group_metrics']
-            conf_metrics = results['confidence_level_metrics']
-            
-            # Average metrics across age and confidence tasks
-            metrics_dict[model_name] = {
-                'accuracy': (age_metrics['accuracy'] + conf_metrics['accuracy']) / 2,
-                'precision_macro': (age_metrics['precision_macro'] + conf_metrics['precision_macro']) / 2,
-                'recall_macro': (age_metrics['recall_macro'] + conf_metrics['recall_macro']) / 2,
-                'f1_macro': (age_metrics['f1_macro'] + conf_metrics['f1_macro']) / 2
-            }
-    
-    if metrics_dict:
-        comparison_fig = evaluator.plot_metrics_comparison(metrics_dict)
-        st.plotly_chart(comparison_fig, use_container_width=True)
-    
-    # Best model recommendations
-    if len(comparison_df) > 0:
-        st.subheader("🥇 Model Rankings")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            best_age_model = comparison_df.loc[comparison_df['Age F1 (Weighted)'].idxmax(), 'Model']
-            best_age_score = comparison_df['Age F1 (Weighted)'].max()
-            st.metric("Best for Age Classification", best_age_model, f"F1: {best_age_score:.3f}")
-        
-        with col2:
-            best_conf_model = comparison_df.loc[comparison_df['Conf F1 (Weighted)'].idxmax(), 'Model']
-            best_conf_score = comparison_df['Conf F1 (Weighted)'].max()
-            st.metric("Best for Confidence Classification", best_conf_model, f"F1: {best_conf_score:.3f}")
-        
-        with col3:
-            # Overall best (average of both tasks)
-            comparison_df['Overall F1'] = (comparison_df['Age F1 (Weighted)'] + comparison_df['Conf F1 (Weighted)']) / 2
-            best_overall_model = comparison_df.loc[comparison_df['Overall F1'].idxmax(), 'Model']
-            best_overall_score = comparison_df['Overall F1'].max()
-            st.metric("Best Overall", best_overall_model, f"Avg F1: {best_overall_score:.3f}")
+    if st.sidebar.button("🗑️ Clear Cache"):
+        cache_manager.api_cache.clear()
+        cache_manager.stats = {'api_hits': 0, 'api_misses': 0, 'cost_saved': 0.0}
+        st.sidebar.success("Cache cleared!")
+        st.experimental_rerun()
 
 def main():
-    """Main Streamlit application with evaluation metrics"""
-    
     st.set_page_config(
-        page_title="AI Classifier with Metrics",
-        page_icon="📊",
+        page_title="Social Media AI Classifier",
+        page_icon="🚀",
         layout="wide",
         initial_sidebar_state="expanded"
     )
     
-    st.title("📊 Social Media AI Classifier with Evaluation Metrics")
-    st.markdown("**Advanced Caching + Multi-Model Analysis + Comprehensive Evaluation**")
-    st.markdown("Complete model evaluation with accuracy, F1-score, recall, precision, and confusion matrices")
+    st.title("🚀 Social Media AI Classifier")
+    st.markdown("**Multi-Model Analysis + Smart Caching - Production Ready**")
+    st.markdown("Classify social media posts by age group and confidence level using AI")
     
     # Initialize classifier
     if 'classifier' not in st.session_state:
-        st.session_state.classifier = EnhancedSocialMediaClassifier()
+        st.session_state.classifier = SimpleSocialMediaClassifier()
     
     classifier = st.session_state.classifier
     
     # Sidebar configuration
     st.sidebar.header("🔑 API Configuration")
     
-    openai_key = st.sidebar.text_input("OpenAI API Key", type="password")
-    anthropic_key = st.sidebar.text_input("Anthropic API Key", type="password")
-    llama3_endpoint = st.sidebar.text_input("Together API Key", type="password")
+    # Option to use environment variables or input fields
+    use_env_vars = st.sidebar.checkbox("Use environment variables", 
+                                      help="Check if you've set API keys as environment variables")
+    
+    if use_env_vars:
+        # Try to get from environment/secrets
+        openai_key = st.secrets.get('OPENAI_API_KEY', '')
+        anthropic_key = st.secrets.get('ANTHROPIC_API_KEY', '')
+        llama3_endpoint = st.secrets.get('TOGETHER_API_KEY', '')
+        
+        if openai_key:
+            st.sidebar.success("✅ OpenAI key found in environment")
+        if anthropic_key:
+            st.sidebar.success("✅ Anthropic key found in environment")
+        if llama3_endpoint:
+            st.sidebar.success("✅ Together AI key found in environment")
+    else:
+        # Manual input
+        openai_key = st.sidebar.text_input("OpenAI API Key", type="password", 
+                                          help="Get from platform.openai.com")
+        anthropic_key = st.sidebar.text_input("Anthropic API Key", type="password",
+                                             help="Get from console.anthropic.com")
+        llama3_endpoint = st.sidebar.text_input("Together AI API Key", type="password",
+                                               help="Get from api.together.xyz")
     
     if st.sidebar.button("🔌 Connect APIs"):
         classifier.setup_apis(openai_key, anthropic_key, llama3_endpoint)
     
-    # Cache status
-    st.sidebar.header("📊 Cache Status")
-    stats = classifier.cache.get_cache_stats()
-    st.sidebar.metric("API Hit Rate", f"{stats['api_hit_rate']:.1f}%")
-    st.sidebar.metric("Cost Saved", f"${stats['cost_saved']:.3f}")
+    # Display cache dashboard
+    display_cache_dashboard(classifier.cache)
     
     # Model selection
     st.sidebar.header("🎯 Model Selection")
-    use_openai = st.sidebar.checkbox("OpenAI GPT-3.5", value=True)
-    use_anthropic = st.sidebar.checkbox("Anthropic Claude", value=False)
-    use_llama3 = st.sidebar.checkbox("Llama 3", value=False)
+    use_openai = st.sidebar.checkbox("OpenAI GPT-3.5", value=True, 
+                                    help="$0.002 per 1K tokens")
+    use_anthropic = st.sidebar.checkbox("Anthropic Claude", value=False,
+                                       help="$0.003 per 1K tokens")
+    use_llama3 = st.sidebar.checkbox("Llama 3 (Together AI)", value=False,
+                                    help="$0.0005 per 1K tokens - Cheapest!")
+    
+    # Cost estimator
+    st.sidebar.subheader("💰 Cost Estimator")
+    num_posts = st.sidebar.slider("Posts to analyze:", 1, 500, 50)
+    
+    if use_openai:
+        openai_cost = num_posts * 0.002
+        st.sidebar.text(f"OpenAI: ~${openai_cost:.3f}")
+    if use_anthropic:
+        anthropic_cost = num_posts * 0.003
+        st.sidebar.text(f"Anthropic: ~${anthropic_cost:.3f}")
+    if use_llama3:
+        llama3_cost = num_posts * 0.0005
+        st.sidebar.text(f"Llama 3: ~${llama3_cost:.3f}")
     
     # Main tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dataset", "🎯 Analysis", "📈 Results", "🔬 Evaluation", "🏆 Model Comparison"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dataset", "🎯 Analysis", "📈 Results", "ℹ️ About"])
     
     with tab1:
-        st.header("📊 Dataset Loading")
+        st.header("📊 Dataset Management")
         
-        uploaded_file = st.file_uploader("Upload social_media_analytics.csv", type="csv")
+        # File upload
+        uploaded_file = st.file_uploader(
+            "Upload your social media CSV file", 
+            type="csv",
+            help="CSV should contain columns: Post Content, Platform, Likes, Comments"
+        )
+        
+        # Load data
         df = load_data_cached(uploaded_file=uploaded_file)
         
-        if not df.empty:
-            st.success(f"✅ Loaded {len(df):,} social media posts")
+        if df.empty:
+            st.warning("📁 No dataset loaded. Using sample data for demonstration.")
             
-            with st.expander("👀 Preview Dataset"):
+            if st.button("📝 Generate Sample Data"):
+                df = create_sample_data()
+                st.session_state.df = df
+                st.success("✅ Sample data generated!")
+                st.experimental_rerun()
+        else:
+            st.success(f"✅ Loaded {len(df):,} social media posts")
+            st.session_state.df = df
+        
+        # Display dataset info
+        if 'df' in st.session_state and not st.session_state.df.empty:
+            df = st.session_state.df
+            
+            with st.expander("👀 Dataset Preview & Statistics"):
+                # Show first few rows
+                st.subheader("First 10 rows:")
                 st.dataframe(df.head(10))
                 
+                # Basic statistics
+                st.subheader("Dataset Statistics:")
                 col1, col2, col3, col4 = st.columns(4)
+                
                 with col1:
                     st.metric("Total Posts", f"{len(df):,}")
+                
                 with col2:
-                    platforms = df['Platform'].nunique() if 'Platform' in df.columns else 0
-                    st.metric("Platforms", platforms)
+                    if 'Platform' in df.columns:
+                        platforms = df['Platform'].nunique()
+                        st.metric("Platforms", platforms)
+                        
+                        # Show platform distribution
+                        platform_dist = df['Platform'].value_counts()
+                        st.write("**Platform Distribution:**")
+                        for platform, count in platform_dist.items():
+                            st.write(f"- {platform}: {count}")
+                
                 with col3:
-                    avg_likes = df['Likes'].mean() if 'Likes' in df.columns else 0
-                    st.metric("Avg Likes", f"{avg_likes:.0f}")
+                    if 'Likes' in df.columns:
+                        avg_likes = df['Likes'].mean()
+                        max_likes = df['Likes'].max()
+                        st.metric("Avg Likes", f"{avg_likes:.0f}")
+                        st.metric("Max Likes", f"{max_likes:,}")
+                
                 with col4:
-                    avg_comments = df['Comments'].mean() if 'Comments' in df.columns else 0
-                    st.metric("Avg Comments", f"{avg_comments:.0f}")
-            
-            st.session_state.df = df
-        else:
-            st.warning("📁 No dataset loaded. Please upload a CSV file.")
+                    if 'Comments' in df.columns:
+                        avg_comments = df['Comments'].mean()
+                        max_comments = df['Comments'].max()
+                        st.metric("Avg Comments", f"{avg_comments:.0f}")
+                        st.metric("Max Comments", f"{max_comments:,}")
+                
+                # Column information
+                st.subheader("Column Information:")
+                st.write("**Available columns:**")
+                for col in df.columns:
+                    st.write(f"- {col}: {df[col].dtype}")
     
     with tab2:
         st.header("🎯 AI Classification Analysis")
         
         if 'df' not in st.session_state or st.session_state.df.empty:
-            st.warning("Please load a dataset first in the Dataset tab.")
+            st.warning("⚠️ Please load a dataset first in the Dataset tab.")
             return
         
         df = st.session_state.df
         
-        analysis_tab1, analysis_tab2 = st.tabs(["Single Post", "Batch Analysis"])
+        # Check if we have the required Post Content column
+        content_column = None
+        for col in df.columns:
+            if 'content' in col.lower() or 'post' in col.lower():
+                content_column = col
+                break
+        
+        if content_column is None:
+            st.error("❌ No 'Post Content' column found in dataset. Please ensure your CSV has a column containing post text.")
+            return
+        
+        st.info(f"✅ Using column '{content_column}' for post analysis")
+        
+        analysis_tab1, analysis_tab2 = st.tabs(["Single Post Analysis", "Batch Analysis"])
         
         with analysis_tab1:
-            st.subheader("Analyze Individual Post")
+            st.subheader("🔍 Analyze Individual Post")
             
-            if len(df) > 0 and 'Post Content' in df.columns:
+            if len(df) > 0:
+                # Post selection
                 post_options = list(range(min(100, len(df))))
                 selected_idx = st.selectbox(
-                    "Select post:", 
+                    "Select post to analyze:", 
                     post_options,
-                    format_func=lambda x: f"Post {x+1}: {df.iloc[x]['Post Content'][:60]}..."
+                    format_func=lambda x: f"Post {x+1}: {str(df.iloc[x][content_column])[:60]}..."
                 )
                 
-                selected_text = df.iloc[selected_idx]['Post Content']
-                st.text_area("Selected Post:", selected_text, height=100)
+                selected_text = str(df.iloc[selected_idx][content_column])
                 
-                if st.button("🔍 Analyze with Caching"):
-                    st.subheader("Analysis Results")
+                # Show post details
+                st.text_area("Selected Post Content:", selected_text, height=100)
+                
+                # Show additional post metadata if available
+                col1, col2 = st.columns(2)
+                with col1:
+                    if 'Platform' in df.columns:
+                        st.info(f"**Platform:** {df.iloc[selected_idx]['Platform']}")
+                    if 'Post Date' in df.columns:
+                        st.info(f"**Date:** {df.iloc[selected_idx]['Post Date']}")
+                
+                with col2:
+                    if 'Likes' in df.columns:
+                        st.info(f"**Likes:** {df.iloc[selected_idx]['Likes']:,}")
+                    if 'Comments' in df.columns:
+                        st.info(f"**Comments:** {df.iloc[selected_idx]['Comments']:,}")
+                
+                # Analysis button
+                if st.button("🚀 Analyze This Post"):
+                    st.subheader("🤖 AI Analysis Results")
                     
                     results = []
                     
-                    with st.spinner("Analyzing (checking cache first)..."):
+                    with st.spinner("Analyzing post (checking cache first)..."):
                         
+                        # Process with selected models
                         if use_openai and classifier.models['openai']:
-                            result = asyncio.run(classifier.classify_with_caching(selected_text, 'openai'))
-                            if 'error' not in result:
-                                results.append(result)
+                            with st.status("Processing with OpenAI..."):
+                                result = asyncio.run(classifier.classify_with_caching(selected_text, 'openai'))
+                                if 'error' not in result:
+                                    results.append(result)
+                                    st.success("✅ OpenAI analysis complete")
+                                else:
+                                    st.error(f"❌ OpenAI error: {result['error']}")
                         
                         if use_anthropic and classifier.models['anthropic']:
-                            result = asyncio.run(classifier.classify_with_caching(selected_text, 'anthropic'))
-                            if 'error' not in result:
-                                results.append(result)
+                            with st.status("Processing with Anthropic Claude..."):
+                                result = asyncio.run(classifier.classify_with_caching(selected_text, 'anthropic'))
+                                if 'error' not in result:
+                                    results.append(result)
+                                    st.success("✅ Anthropic analysis complete")
+                                else:
+                                    st.error(f"❌ Anthropic error: {result['error']}")
                         
                         if use_llama3 and classifier.models['llama3']:
-                            result = asyncio.run(classifier.classify_with_caching(selected_text, 'llama3'))
-                            if 'error' not in result:
-                                results.append(result)
+                            with st.status("Processing with Llama 3..."):
+                                result = asyncio.run(classifier.classify_with_caching(selected_text, 'llama3'))
+                                if 'error' not in result:
+                                    results.append(result)
+                                    st.success("✅ Llama 3 analysis complete")
+                                else:
+                                    st.error(f"❌ Llama 3 error: {result['error']}")
                     
                     # Display results
-                    for result in results:
-                        with st.expander(f"🤖 {result['model']} Results", expanded=True):
-                            col1, col2, col3 = st.columns(3)
+                    if results:
+                        for i, result in enumerate(results):
+                            with st.expander(f"🤖 {result['model']} Analysis", expanded=True):
+                                
+                                # Main metrics
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    age_emoji = {"teens": "🧒", "young_adults": "👨‍💼", "adults": "👨‍👩‍👧‍👦", "seniors": "👴"}
+                                    st.metric("Age Group", 
+                                             f"{age_emoji.get(result['age_group'], '❓')} {result['age_group'].replace('_', ' ').title()}")
+                                
+                                with col2:
+                                    conf_emoji = {"low": "😟", "medium": "😐", "high": "😊"}
+                                    st.metric("Confidence Level", 
+                                             f"{conf_emoji.get(result['confidence_level'], '❓')} {result['confidence_level'].title()}")
+                                
+                                with col3:
+                                    score_color = "🟢" if result['confidence_score'] > 0.7 else "🟡" if result['confidence_score'] > 0.4 else "🔴"
+                                    st.metric("AI Confidence", 
+                                             f"{score_color} {result['confidence_score']:.2f}")
+                                
+                                # Reasoning
+                                st.markdown("**🧠 AI Reasoning:**")
+                                st.write(result['reasoning'])
+                                
+                                # Raw response (collapsible)
+                                with st.expander("📝 Raw AI Response"):
+                                    st.code(result['raw_response'], language="text")
+                        
+                        # Consensus if multiple models
+                        if len(results) > 1:
+                            st.subheader("🤝 Multi-Model Consensus")
                             
+                            ages = [r['age_group'] for r in results]
+                            confs = [r['confidence_level'] for r in results]
+                            
+                            age_consensus = max(set(ages), key=ages.count) if ages else 'unknown'
+                            conf_consensus = max(set(confs), key=confs.count) if confs else 'unknown'
+                            
+                            col1, col2 = st.columns(2)
                             with col1:
-                                st.metric("Age Group", result['age_group'].title())
-                            with col2:
-                                st.metric("Confidence Level", result['confidence_level'].title())
-                            with col3:
-                                st.metric("Confidence Score", f"{result['confidence_score']:.2f}")
+                                age_agreement = ages.count(age_consensus)
+                                st.success(f"**Age Group Consensus:** {age_consensus.replace('_', ' ').title()} ({age_agreement}/{len(ages)} models agree)")
                             
-                            st.markdown(f"**Reasoning:** {result['reasoning']}")
+                            with col2:
+                                conf_agreement = confs.count(conf_consensus)
+                                st.success(f"**Confidence Consensus:** {conf_consensus.title()} ({conf_agreement}/{len(confs)} models agree)")
+                    
+                    else:
+                        st.error("❌ No successful analyses. Please check your API connections.")
         
         with analysis_tab2:
-            st.subheader("Batch Analysis with Smart Caching")
+            st.subheader("📊 Batch Analysis")
             
-            sample_size = st.slider("Number of posts to analyze:", 10, min(200, len(df)), 50)
+            # Batch size selection
+            max_posts = min(len(df), 200)  # Limit for demo
+            sample_size = st.slider("Number of posts to analyze:", 5, max_posts, min(50, max_posts))
             
-            if st.button("🚀 Run Cached Batch Analysis"):
+            # Model selection reminder
+            selected_models = []
+            if use_openai and classifier.models['openai']:
+                selected_models.append('OpenAI')
+            if use_anthropic and classifier.models['anthropic']:
+                selected_models.append('Anthropic')
+            if use_llama3 and classifier.models['llama3']:
+                selected_models.append('Llama 3')
+            
+            if not selected_models:
+                st.warning("⚠️ Please connect at least one AI model and enable it in the sidebar.")
+                return
+            
+            st.info(f"💡 **Smart Caching Enabled**: Previously analyzed posts will be served from cache, saving time and money!")
+            
+            # Cost estimation
+            estimated_new_calls = sample_size  # Worst case
+            if use_llama3:
+                estimated_cost = estimated_new_calls * 0.0005
+                st.success(f"💰 **Estimated cost**: ~${estimated_cost:.3f} (using cheapest model: Llama 3)")
+            elif use_openai:
+                estimated_cost = estimated_new_calls * 0.002
+                st.info(f"💰 **Estimated cost**: ~${estimated_cost:.3f} (using OpenAI)")
+            elif use_anthropic:
+                estimated_cost = estimated_new_calls * 0.003
+                st.info(f"💰 **Estimated cost**: ~${estimated_cost:.3f} (using Anthropic)")
+            
+            # Run batch analysis
+            if st.button("🚀 Run Batch Analysis"):
                 
+                # Sample data
                 sample_df = df.sample(n=sample_size, random_state=42)
                 results_list = []
+                cache_hits = 0
+                api_calls_made = 0
                 
+                # Progress tracking
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                cache_status = st.empty()
                 
+                # Choose model (prefer cheapest for batch)
+                model_to_use = None
+                if use_llama3 and classifier.models['llama3']:
+                    model_to_use = 'llama3'
+                elif use_openai and classifier.models['openai']:
+                    model_to_use = 'openai'
+                elif use_anthropic and classifier.models['anthropic']:
+                    model_to_use = 'anthropic'
+                
+                st.info(f"🎯 Using {model_to_use.upper()} for batch processing (most cost-effective)")
+                
+                # Process posts
                 for i, (_, row) in enumerate(sample_df.iterrows()):
                     progress = (i + 1) / len(sample_df)
                     progress_bar.progress(progress)
                     status_text.text(f"Processing post {i+1}/{len(sample_df)}...")
                     
-                    if 'Post Content' in row:
-                        text = row['Post Content']
-                        
-                        # Use enabled model
-                        model_to_use = None
-                        if use_llama3 and classifier.models['llama3']:
-                            model_to_use = 'llama3'
-                        elif use_openai and classifier.models['openai']:
-                            model_to_use = 'openai'
-                        elif use_anthropic and classifier.models['anthropic']:
-                            model_to_use = 'anthropic'
-                        
-                        if model_to_use:
-                            result = asyncio.run(classifier.classify_with_caching(text, model_to_use))
-                            
-                            if 'error' not in result:
-                                result.update({
-                                    'post_id': row.get('Post ID', i),
-                                    'platform': row.get('Platform', 'Unknown'),
-                                    'likes': row.get('Likes', 0),
-                                    'comments': row.get('Comments', 0),
-                                    'post_content': text[:100] + '...' if len(text) > 100 else text
-                                })
-                                results_list.append(result)
+                    text = str(row[content_column])
                     
+                    # Check cache status
+                    cached_result = classifier.cache.get_api_response(text, model_to_use)
+                    if cached_result:
+                        cache_hits += 1
+                    else:
+                        api_calls_made += 1
+                    
+                    # Classify
+                    result = asyncio.run(classifier.classify_with_caching(text, model_to_use))
+                    
+                    if 'error' not in result:
+                        # Add metadata
+                        result.update({
+                            'original_index': row.name,
+                            'platform': row.get('Platform', 'Unknown'),
+                            'likes': row.get('Likes', 0),
+                            'comments': row.get('Comments', 0),
+                            'post_content': text[:100] + '...' if len(text) > 100 else text
+                        })
+                        results_list.append(result)
+                    
+                    # Update cache status
+                    cache_status.text(f"📊 Cache hits: {cache_hits}, New API calls: {api_calls_made}")
+                    
+                    # Small delay to avoid rate limits
                     time.sleep(0.02)
                 
+                # Clean up progress indicators
                 progress_bar.empty()
                 status_text.empty()
+                cache_status.empty()
                 
+                # Process results
                 if results_list:
                     results_df = pd.DataFrame(results_list)
                     st.session_state['batch_results'] = results_df
-                    st.success(f"✅ Analyzed {len(results_df)} posts successfully!")
+                    
+                    # Success metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("✅ Posts Analyzed", len(results_df))
+                    
+                    with col2:
+                        cache_rate = (cache_hits / max(cache_hits + api_calls_made, 1)) * 100
+                        st.metric("📊 Cache Hit Rate", f"{cache_rate:.1f}%")
+                    
+                    with col3:
+                        actual_cost = api_calls_made * classifier.cost_per_1k.get(model_to_use, 0.002)
+                        st.metric("💰 Actual Cost", f"${actual_cost:.3f}")
+                    
+                    with col4:
+                        saved_cost = cache_hits * classifier.cost_per_1k.get(model_to_use, 0.002)
+                        st.metric("💸 Cost Saved", f"${saved_cost:.3f}")
+                    
+                    if cache_rate > 50:
+                        st.success(f"🎉 Excellent cache performance! {cache_hits} results served from cache, only {api_calls_made} new API calls needed.")
+                    else:
+                        st.info(f"📊 Analysis complete! {cache_hits} cached + {api_calls_made} new API calls.")
+                
+                else:
+                    st.error("❌ No posts were successfully analyzed. Please check your API connections.")
     
     with tab3:
-        st.header("📈 Analysis Results")
-        
-        if 'batch_results' in st.session_state:
-            results_df = st.session_state['batch_results']
-            
-            # Basic visualizations
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                age_dist = results_df['age_group'].value_counts()
-                fig_age = px.pie(values=age_dist.values, names=age_dist.index, 
-                               title='Age Group Distribution')
-                st.plotly_chart(fig_age, use_container_width=True)
-            
-            with col2:
-                conf_dist = results_df['confidence_level'].value_counts()
-                fig_conf = px.pie(values=conf_dist.values, names=conf_dist.index,
-                                title='Confidence Level Distribution')
-                st.plotly_chart(fig_conf, use_container_width=True)
-            
-            # Results table
-            st.subheader("📊 Detailed Results")
-            st.dataframe(
-                results_df[['post_content', 'age_group', 'confidence_level', 'confidence_score', 'platform', 'likes', 'comments']],
-                use_container_width=True
-            )
-            
-            # Download results
-            csv = results_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv,
-                file_name=f"social_media_classification_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-        
-        else:
-            st.info("👆 Run batch analysis to see results here")
-    
-    with tab4:
-        st.header("🔬 Model Evaluation")
+        st.header("📈 Analysis Results & Insights")
         
         if 'batch_results' not in st.session_state:
-            st.warning("Please run batch analysis first to generate evaluation data.")
+            st.info("👆 Run batch analysis first to see comprehensive results here.")
             return
         
         results_df = st.session_state['batch_results']
         
-        # Create ground truth
-        st.subheader("📋 Ground Truth Generation")
-        st.info("💡 **Note**: In production, you'd have human-annotated labels. This demo uses heuristic-based ground truth for demonstration.")
+        # Calculate insights
+        insights = classifier.calculate_simple_accuracy(results_df)
         
-        if st.button("🎯 Generate Ground Truth Labels"):
-            with st.spinner("Generating synthetic ground truth labels..."):
-                # Create ground truth using heuristics
-                ground_truth_df = classifier.create_synthetic_ground_truth(
-                    st.session_state.df, 
-                    sample_size=len(results_df)
+        if 'error' not in insights:
+            # Overview metrics
+            st.subheader("📊 Analysis Overview")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📝 Posts Analyzed", insights['total_analyzed'])
+            
+            with col2:
+                st.metric("🎯 Most Common Age", insights['most_common_age'].replace('_', ' ').title())
+            
+            with col3:
+                st.metric("💭 Most Common Confidence", insights['most_common_confidence'].title())
+            
+            with col4:
+                st.metric("🤖 Avg AI Confidence", f"{insights['average_confidence_score']:.2f}")
+            
+            # Visualizations
+            st.subheader("📊 Distribution Analysis")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Age group distribution
+                age_dist = results_df['age_group'].value_counts()
+                fig_age = px.pie(
+                    values=age_dist.values, 
+                    names=[name.replace('_', ' ').title() for name in age_dist.index],
+                    title='Age Group Distribution',
+                    color_discrete_sequence=px.colors.qualitative.Set3
                 )
-                
-                st.session_state['ground_truth'] = ground_truth_df
-                st.success(f"✅ Generated ground truth for {len(ground_truth_df)} posts")
-        
-        if 'ground_truth' in st.session_state:
-            ground_truth_df = st.session_state['ground_truth']
+                st.plotly_chart(fig_age, use_container_width=True)
             
-            # Run evaluation
-            if st.button("📊 Evaluate Model Performance"):
-                with st.spinner("Calculating evaluation metrics..."):
-                    evaluation_results = classifier.evaluate_model_performance(
-                        results_df, 
-                        ground_truth_df
-                    )
-                    
-                    st.session_state['evaluation_results'] = evaluation_results
-                    
-                    if 'error' not in evaluation_results:
-                        st.success(f"✅ Evaluation complete! Analyzed {evaluation_results['sample_size']} posts.")
-            
-            # Display evaluation results
-            if 'evaluation_results' in st.session_state:
-                display_evaluation_dashboard(st.session_state['evaluation_results'])
-    
-    with tab5:
-        st.header("🏆 Multi-Model Performance Comparison")
-        
-        st.info("💡 **To compare models**: Run batch analysis with different models enabled and evaluate each one separately.")
-        
-        # Example of how to store multiple model results
-        if 'model_evaluations' not in st.session_state:
-            st.session_state['model_evaluations'] = {}
-        
-        # Option to save current evaluation
-        if 'evaluation_results' in st.session_state:
-            evaluation_results = st.session_state['evaluation_results']
-            
-            if 'error' not in evaluation_results:
-                current_model = st.selectbox(
-                    "Save current evaluation as:",
-                    ["OpenAI GPT-3.5", "Anthropic Claude", "Llama 3", "Custom Model"]
+            with col2:
+                # Confidence distribution
+                conf_dist = results_df['confidence_level'].value_counts()
+                fig_conf = px.pie(
+                    values=conf_dist.values, 
+                    names=[name.title() for name in conf_dist.index],
+                    title='Confidence Level Distribution',
+                    color_discrete_sequence=px.colors.qualitative.Pastel
                 )
-                
-                if st.button(f"💾 Save {current_model} Results"):
-                    st.session_state['model_evaluations'][current_model] = evaluation_results
-                    st.success(f"✅ Saved evaluation results for {current_model}")
-        
-        # Display comparison if multiple models available
-        if len(st.session_state['model_evaluations']) > 0:
-            st.subheader("📊 Saved Model Evaluations")
+                st.plotly_chart(fig_conf, use_container_width=True)
             
-            for model_name in st.session_state['model_evaluations'].keys():
-                col1, col2 = st.columns([3, 1])
+            # Engagement analysis
+            if 'likes' in results_df.columns and results_df['likes'].sum() > 0:
+                st.subheader("📈 Engagement Analysis")
+                
+                col1, col2 = st.columns(2)
+                
                 with col1:
-                    st.write(f"**{model_name}**")
+                    # Likes by age group
+                    fig_likes = px.box(
+                        results_df, 
+                        x='age_group', 
+                        y='likes',
+                        title='Likes Distribution by Age Group'
+                    )
+                    fig_likes.update_xaxes(title="Age Group")
+                    fig_likes.update_yaxes(title="Likes")
+                    st.plotly_chart(fig_likes, use_container_width=True)
+                
                 with col2:
-                    if st.button(f"🗑️ Remove", key=f"remove_{model_name}"):
-                        del st.session_state['model_evaluations'][model_name]
-                        st.experimental_rerun()
+                    # Comments by confidence level
+                    if 'comments' in results_df.columns:
+                        fig_comments = px.box(
+                            results_df, 
+                            x='confidence_level', 
+                            y='comments',
+                            title='Comments Distribution by Confidence Level'
+                        )
+                        fig_comments.update_xaxes(title="Confidence Level")
+                        fig_comments.update_yaxes(title="Comments")
+                        st.plotly_chart(fig_comments, use_container_width=True)
             
-            if len(st.session_state['model_evaluations']) >= 2:
-                compare_model_performance(st.session_state['model_evaluations'])
+            # Detailed results table
+            st.subheader("📋 Detailed Classification Results")
+            
+            # Filtering options
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                age_filter = st.multiselect(
+                    "Filter by Age Group:",
+                    options=results_df['age_group'].unique(),
+                    default=[]
+                )
+            
+            with col2:
+                conf_filter = st.multiselect(
+                    "Filter by Confidence Level:",
+                    options=results_df['confidence_level'].unique(),
+                    default=[]
+                )
+            
+            with col3:
+                min_confidence = st.slider(
+                    "Minimum AI Confidence Score:",
+                    0.0, 1.0, 0.0, 0.1
+                )
+            
+            # Apply filters
+            filtered_df = results_df.copy()
+            
+            if age_filter:
+                filtered_df = filtered_df[filtered_df['age_group'].isin(age_filter)]
+            
+            if conf_filter:
+                filtered_df = filtered_df[filtered_df['confidence_level'].isin(conf_filter)]
+            
+            filtered_df = filtered_df[filtered_df['confidence_score'] >= min_confidence]
+            
+            # Display filtered results
+            if len(filtered_df) > 0:
+                st.info(f"Showing {len(filtered_df)} of {len(results_df)} posts")
+                
+                # Select columns to display
+                display_columns = ['post_content', 'age_group', 'confidence_level', 'confidence_score']
+                
+                if 'platform' in filtered_df.columns:
+                    display_columns.append('platform')
+                if 'likes' in filtered_df.columns:
+                    display_columns.append('likes')
+                if 'comments' in filtered_df.columns:
+                    display_columns.append('comments')
+                
+                # Clean up column names for display
+                display_df = filtered_df[display_columns].copy()
+                display_df.columns = [col.replace('_', ' ').title() for col in display_df.columns]
+                
+                st.dataframe(display_df, use_container_width=True)
+                
+                # Download options
+                st.subheader("💾 Export Results")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Download filtered results
+                    csv_filtered = filtered_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Filtered Results",
+                        data=csv_filtered,
+                        file_name=f"filtered_classification_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+                
+                with col2:
+                    # Download full results
+                    csv_full = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download All Results",
+                        data=csv_full,
+                        file_name=f"social_media_classification_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+            
+            else:
+                st.warning("No posts match the selected filters. Try adjusting your criteria.")
+        
         else:
-            st.info("No saved model evaluations yet. Complete an evaluation in the Evaluation tab first.")
+            st.error(f"Error analyzing results: {insights['error']}")
+    
+    with tab4:
+        st.header("ℹ️ About This Application")
+        
+        st.markdown("""
+        ### 🚀 **Social Media AI Classifier**
+        
+        This application uses state-of-the-art AI models to automatically classify social media posts by:
+        - **Age Group**: teens, young adults, adults, seniors
+        - **Confidence Level**: low, medium, high
+        
+        ### 🤖 **Supported AI Models**
+        
+        | Model | Provider | Cost per 1K tokens | Best For |
+        |-------|----------|-------------------|----------|
+        | **GPT-3.5** | OpenAI | $0.002 | Balanced accuracy & cost |
+        | **Claude** | Anthropic | $0.003 | Complex reasoning |
+        | **Llama 3** | Together AI | $0.0005 | Cost-effective analysis |
+        
+        ### 🎯 **Key Features**
+        
+        ✅ **Smart Caching**: Dramatically reduces API costs for repeated analysis  
+        ✅ **Multi-Model Support**: Compare results across different AI providers  
+        ✅ **Batch Processing**: Analyze hundreds of posts efficiently  
+        ✅ **Real-time Insights**: Interactive visualizations and statistics  
+        ✅ **Cost Optimization**: Intelligent model selection and usage tracking  
+        ✅ **Export Capabilities**: Download results in CSV format  
+        
+        ### 📊 **Use Cases**
+        
+        - **Market Research**: Understand your audience demographics
+        - **Content Strategy**: Optimize posts for specific age groups
+        - **Social Listening**: Monitor brand sentiment across demographics
+        - **Academic Research**: Study communication patterns by age
+        - **Product Development**: Tailor features to user confidence levels
+        
+        ### 🔒 **Privacy & Security**
+        
+        - API keys are encrypted and never stored
+        - No data is retained after your session
+        - All processing happens in real-time
+        - Cache is local to your session only
+        
+        ### 💡 **Pro Tips**
+        
+        1. **Start small**: Test with 10-20 posts first
+        2. **Use caching**: Re-analyze similar content to save costs
+        3. **Compare models**: Different models excel at different aspects
+        4. **Monitor costs**: Check the sidebar for real-time cost tracking
+        5. **Export results**: Download your analysis for further study
+        
+        ### 🛠️ **Technical Details**
+        
+        - Built with **Streamlit** for the web interface
+        - Uses **Plotly** for interactive visualizations  
+        - Implements **async processing** for better performance
+        - Features **intelligent caching** with automatic expiration
+        - Supports **multiple file formats** for data input
+        
+        ### 📞 **Support**
+        
+        Having issues? Check these common solutions:
+        - Ensure your CSV has a 'Post Content' column
+        - Verify API keys are entered correctly
+        - Try refreshing the page if models aren't connecting
+        - Use sample data to test functionality first
+        
+        ### 🔮 **Future Enhancements**
+        
+        - Advanced evaluation metrics (accuracy, F1-score)
+        - Support for more AI models and providers
+        - Real-time social media API integration
+        - Custom classification categories
+        - Enhanced visualization options
+        """)
+        
+        # System status
+        st.subheader("⚙️ System Status")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("🐍 Python", "3.9+")
+            st.metric("🚀 Streamlit", "1.29.0")
+        
+        with col2:
+            openai_status = "✅ Available" if OPENAI_AVAILABLE else "❌ Not installed"
+            anthropic_status = "✅ Available" if ANTHROPIC_AVAILABLE else "❌ Not installed"
+            st.metric("🤖 OpenAI", openai_status)
+            st.metric("🧠 Anthropic", anthropic_status)
+        
+        with col3:
+            requests_status = "✅ Available" if REQUESTS_AVAILABLE else "❌ Not installed"
+            cache_size = len(classifier.cache.api_cache)
+            st.metric("🌐 Requests", requests_status)
+            st.metric("💾 Cache Size", cache_size)
     
     # Footer
     st.markdown("---")
     cache_stats = classifier.cache.get_cache_stats()
-    st.markdown(f"📊 **AI Classifier with Metrics** | Cache Hit: {cache_stats['api_hit_rate']:.1f}% | Cost Saved: ${cache_stats['cost_saved']:.3f}")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("🚀 **Social Media AI Classifier**")
+    with col2:
+        st.markdown(f"💾 Cache Hit Rate: {cache_stats['api_hit_rate']:.1f}%")
+    with col3:
+        st.markdown(f"💰 Total Saved: ${cache_stats['cost_saved']:.3f}")
 
 if __name__ == "__main__":
     main()
