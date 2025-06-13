@@ -294,7 +294,8 @@ Score: [0.0-1.0]"""
     def create_ground_truth(self, df: pd.DataFrame, content_column: str) -> pd.DataFrame:
         """Create ground truth using keyword heuristics"""
         
-        sample_df = df.copy()
+        # Work with the full dataframe, don't sample
+        sample_df = df.copy().reset_index(drop=True)
         sample_df['true_age_group'] = 'unknown'
         sample_df['true_confidence_level'] = 'unknown'
         
@@ -326,27 +327,40 @@ Score: [0.0-1.0]"""
     def calculate_accuracy(self, results_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> Dict:
         """Calculate accuracy metrics"""
         
-        if len(results_df) != len(ground_truth_df):
-            return {'error': 'Results and ground truth have different lengths'}
+        # Safety checks
+        if len(results_df) == 0:
+            return {'error': 'No results to evaluate'}
         
-        # Merge based on index
-        results_df = results_df.reset_index(drop=True)
-        ground_truth_df = ground_truth_df.reset_index(drop=True)
+        if len(ground_truth_df) == 0:
+            return {'error': 'No ground truth data available'}
         
-        age_correct = (results_df['age_group'] == ground_truth_df['true_age_group']).sum()
-        conf_correct = (results_df['confidence_level'] == ground_truth_df['true_confidence_level']).sum()
-        total = len(results_df)
+        # Take the minimum length to ensure alignment
+        min_length = min(len(results_df), len(ground_truth_df))
         
-        age_accuracy = age_correct / total if total > 0 else 0
-        conf_accuracy = conf_correct / total if total > 0 else 0
+        if min_length == 0:
+            return {'error': 'No data to compare'}
         
-        return {
-            'sample_size': total,
-            'age_accuracy': age_accuracy,
-            'confidence_accuracy': conf_accuracy,
-            'age_correct': age_correct,
-            'conf_correct': conf_correct
-        }
+        # Reset indices and trim to same length
+        results_df = results_df.reset_index(drop=True).head(min_length)
+        ground_truth_df = ground_truth_df.reset_index(drop=True).head(min_length)
+        
+        try:
+            age_correct = (results_df['age_group'] == ground_truth_df['true_age_group']).sum()
+            conf_correct = (results_df['confidence_level'] == ground_truth_df['true_confidence_level']).sum()
+            total = min_length
+            
+            age_accuracy = age_correct / total if total > 0 else 0
+            conf_accuracy = conf_correct / total if total > 0 else 0
+            
+            return {
+                'sample_size': total,
+                'age_accuracy': age_accuracy,
+                'confidence_accuracy': conf_accuracy,
+                'age_correct': age_correct,
+                'conf_correct': conf_correct
+            }
+        except Exception as e:
+            return {'error': f'Error calculating accuracy: {str(e)}'}
 
 @st.cache_data(ttl=1800)
 def load_data_cached(uploaded_file=None) -> pd.DataFrame:
@@ -469,8 +483,13 @@ def main():
         # Single post analysis
         st.subheader("Single Post Analysis")
         
-        post_idx = st.selectbox("Select post:", range(len(df)))
-        selected_text = df.iloc[post_idx][content_column]
+        post_idx = st.selectbox("Select post:", range(min(len(df), 100)), format_func=lambda x: f"Post {x+1}")
+        
+        if post_idx >= len(df):
+            st.error("Selected post index out of range")
+            return
+            
+        selected_text = str(df.iloc[post_idx][content_column])
         
         st.text_area("Post content:", selected_text, height=100)
         
@@ -512,10 +531,22 @@ def main():
         # Batch analysis
         st.subheader("Batch Analysis")
         
-        sample_size = st.slider("Posts to analyze:", 5, min(50, len(df)), 10)
+        sample_size = st.slider("Posts to analyze:", 1, min(50, len(df)), min(10, len(df)))
         
         if st.button("Run Batch Analysis"):
-            sample_df = df.sample(n=sample_size, random_state=42)
+            # Validate sample size
+            max_available = len(df)
+            actual_sample_size = min(sample_size, max_available)
+            
+            if actual_sample_size < sample_size:
+                st.warning(f"Requested {sample_size} posts, but only {max_available} available. Using {actual_sample_size} posts.")
+            
+            try:
+                sample_df = df.sample(n=actual_sample_size, random_state=42, replace=False)
+            except ValueError as e:
+                st.error(f"Sampling error: {e}")
+                return
+            
             results_list = []
             
             progress_bar = st.progress(0)
@@ -564,43 +595,76 @@ def main():
         
         results_df = st.session_state['batch_results']
         
+        if len(results_df) == 0:
+            st.error("No results found. Please run batch analysis first.")
+            return
+        
         # Overview
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Posts Analyzed", len(results_df))
         with col2:
-            most_common_age = results_df['age_group'].mode()[0]
+            try:
+                most_common_age = results_df['age_group'].mode()[0] if len(results_df) > 0 else 'Unknown'
+            except:
+                most_common_age = results_df['age_group'].value_counts().index[0] if len(results_df) > 0 else 'Unknown'
             st.metric("Most Common Age", most_common_age.replace('_', ' ').title())
         with col3:
-            most_common_conf = results_df['confidence_level'].mode()[0]
+            try:
+                most_common_conf = results_df['confidence_level'].mode()[0] if len(results_df) > 0 else 'Unknown'
+            except:
+                most_common_conf = results_df['confidence_level'].value_counts().index[0] if len(results_df) > 0 else 'Unknown'
             st.metric("Most Common Confidence", most_common_conf.title())
         
         # Visualizations
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            age_dist = results_df['age_group'].value_counts()
-            fig_age = px.pie(values=age_dist.values, names=age_dist.index, title='Age Groups')
-            st.plotly_chart(fig_age, use_container_width=True)
-        
-        with col2:
-            conf_dist = results_df['confidence_level'].value_counts()
-            fig_conf = px.pie(values=conf_dist.values, names=conf_dist.index, title='Confidence Levels')
-            st.plotly_chart(fig_conf, use_container_width=True)
+        if len(results_df) > 0:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                age_dist = results_df['age_group'].value_counts()
+                if len(age_dist) > 0:
+                    fig_age = px.pie(values=age_dist.values, names=age_dist.index, title='Age Groups')
+                    st.plotly_chart(fig_age, use_container_width=True)
+                else:
+                    st.info("No age group data to display")
+            
+            with col2:
+                conf_dist = results_df['confidence_level'].value_counts()
+                if len(conf_dist) > 0:
+                    fig_conf = px.pie(values=conf_dist.values, names=conf_dist.index, title='Confidence Levels')
+                    st.plotly_chart(fig_conf, use_container_width=True)
+                else:
+                    st.info("No confidence level data to display")
+        else:
+            st.warning("No data available for visualization")
         
         # Results table
         st.subheader("Detailed Results")
-        display_columns = ['post_content', 'age_group', 'confidence_level', 'confidence_score']
-        st.dataframe(results_df[display_columns])
         
-        # Download
-        csv = results_df.to_csv(index=False)
-        st.download_button(
-            "Download Results",
-            csv,
-            f"classification_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv"
-        )
+        if len(results_df) > 0:
+            # Ensure columns exist before displaying
+            available_columns = []
+            desired_columns = ['post_content', 'age_group', 'confidence_level', 'confidence_score']
+            
+            for col in desired_columns:
+                if col in results_df.columns:
+                    available_columns.append(col)
+            
+            if available_columns:
+                st.dataframe(results_df[available_columns])
+                
+                # Download
+                csv = results_df.to_csv(index=False)
+                st.download_button(
+                    "Download Results",
+                    csv,
+                    f"classification_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    "text/csv"
+                )
+            else:
+                st.error("No valid columns found in results")
+        else:
+            st.warning("No results to display")
     
     with tab4:
         st.header("Model Evaluation")
@@ -611,6 +675,10 @@ def main():
         
         results_df = st.session_state['batch_results']
         original_df = st.session_state['df']
+        
+        if len(results_df) == 0:
+            st.error("No results found. Please run batch analysis first.")
+            return
         
         # Find content column
         content_column = None
@@ -623,9 +691,28 @@ def main():
         
         if st.button("Generate Ground Truth"):
             with st.spinner("Generating ground truth labels..."):
-                ground_truth_df = classifier.create_ground_truth(original_df, content_column)
-                st.session_state['ground_truth'] = ground_truth_df
-                st.success("Ground truth generated")
+                try:
+                    # Get the original dataframe that matches the analyzed posts
+                    if len(results_df) == 0:
+                        st.error("No results to generate ground truth for")
+                        return
+                    
+                    # Create a subset of original data that matches our results
+                    original_indices = results_df.get('original_index', range(len(results_df)))
+                    
+                    try:
+                        subset_df = original_df.iloc[original_indices].copy()
+                    except:
+                        # Fallback: use the first N rows
+                        subset_df = original_df.head(len(results_df)).copy()
+                    
+                    ground_truth_df = classifier.create_ground_truth(subset_df, content_column)
+                    st.session_state['ground_truth'] = ground_truth_df
+                    st.success(f"Ground truth generated for {len(ground_truth_df)} posts")
+                    
+                except Exception as e:
+                    st.error(f"Error generating ground truth: {str(e)}")
+                    st.info("Try running batch analysis again first")
         
         if 'ground_truth' in st.session_state:
             ground_truth_df = st.session_state['ground_truth']
