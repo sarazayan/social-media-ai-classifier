@@ -104,27 +104,32 @@ class SocialMediaClassifier:
                 st.error(f"Llama 3 setup failed: {e}")
 
     def create_classification_prompt(self, text: str, model_type: str) -> str:
-        base_prompt = f"""Analyze this social media post and classify the author.
+        base_prompt = f"""Analyze this social media post and classify the author's demographics and psychological state.
 
 TASK: Determine AGE GROUP and CONFIDENCE LEVEL
 
 AGE GROUPS:
-- teens: 13-19 years (school, slang, peers)
-- young_adults: 20-30 years (career, independence)  
-- adults: 31-55 years (family, responsibilities)
-- seniors: 55+ years (retirement, grandchildren)
+- teens: 13-19 years (school, homework, slang like "omg", "literally")
+- young_adults: 20-30 years (career, job, college, independence)  
+- adults: 31-55 years (family, kids, parenting, mortgage)
+- seniors: 55+ years (retirement, grandchildren, health concerns)
 
-CONFIDENCE LEVELS:
-- low: self-doubt, negative self-talk
-- medium: balanced perspective
-- high: self-assured, confident
+CONFIDENCE LEVELS - LOOK FOR THESE SPECIFIC PATTERNS:
+- low: "not good enough", "terrible at", "everyone else", "scared", "worried", "confused", "don't know", "awful", "struggling"
+- medium: "sometimes", "usually", "okay", "decent", "learning", "improving", "mixed feelings", "ups and downs"  
+- high: "confident", "excellent", "proud", "sure", "great at", "amazing", "definitely", "successful", "capable"
 
 POST: "{text}"
+
+IMPORTANT: Pay special attention to confidence indicators. Look for:
+- Self-doubt words = LOW confidence
+- Neutral/balanced words = MEDIUM confidence  
+- Self-assured words = HIGH confidence
 
 RESPONSE FORMAT:
 Age Group: [teens/young_adults/adults/seniors]
 Confidence Level: [low/medium/high]
-Reasoning: [Brief explanation]
+Reasoning: [Explain BOTH age and confidence indicators you found]
 Score: [0.0-1.0]"""
 
         return base_prompt
@@ -292,7 +297,7 @@ Score: [0.0-1.0]"""
         return result
 
     def create_ground_truth(self, df: pd.DataFrame, content_column: str) -> pd.DataFrame:
-        """Create ground truth using keyword heuristics"""
+        """Create ground truth using enhanced keyword heuristics"""
         
         # Work with the full dataframe, don't sample
         sample_df = df.copy().reset_index(drop=True)
@@ -302,25 +307,74 @@ Score: [0.0-1.0]"""
         for idx, row in sample_df.iterrows():
             text = str(row[content_column]).lower()
             
-            # Age group rules
-            if any(word in text for word in ['school', 'homework', 'class', 'omg', 'literally']):
+            # Enhanced Age group rules with more keywords
+            if any(word in text for word in ['school', 'homework', 'class', 'omg', 'literally', 'teen', 'high school', 'grade', 'teacher', 'exam', 'student']):
                 sample_df.at[idx, 'true_age_group'] = 'teens'
-            elif any(word in text for word in ['college', 'job', 'career', 'apartment']):
+            elif any(word in text for word in ['college', 'job', 'career', 'apartment', 'university', 'interview', 'graduate', 'dating', 'single', 'relationship']):
                 sample_df.at[idx, 'true_age_group'] = 'young_adults'
-            elif any(word in text for word in ['kids', 'family', 'mortgage', 'parenting']):
+            elif any(word in text for word in ['kids', 'family', 'mortgage', 'parenting', 'children', 'marriage', 'spouse', 'work', 'business', 'project']):
                 sample_df.at[idx, 'true_age_group'] = 'adults'
-            elif any(word in text for word in ['retirement', 'grandchildren', 'health']):
+            elif any(word in text for word in ['retirement', 'grandchildren', 'health', 'retired', 'doctor', 'medication', 'years ago', 'back then']):
                 sample_df.at[idx, 'true_age_group'] = 'seniors'
             else:
                 sample_df.at[idx, 'true_age_group'] = 'young_adults'
             
-            # Confidence rules
-            if any(word in text for word in ['terrible', 'awful', 'scared', 'worried', 'confused']):
-                sample_df.at[idx, 'true_confidence_level'] = 'low'
-            elif any(word in text for word in ['confident', 'excellent', 'proud', 'sure']):
-                sample_df.at[idx, 'true_confidence_level'] = 'high'
-            else:
-                sample_df.at[idx, 'true_confidence_level'] = 'medium'
+            # Enhanced Confidence rules - more comprehensive
+            low_confidence_phrases = [
+                'not good enough', 'terrible at', 'awful at', 'bad at', 'struggling with',
+                'everyone else', 'better than me', 'smarter than', 'worse than',
+                'scared', 'worried', 'confused', 'lost', 'dont know', "don't know",
+                'not sure', 'uncertain', 'anxious', 'nervous', 'overwhelmed',
+                'failing', 'useless', 'hopeless', 'can\'t do', 'unable to'
+            ]
+            
+            high_confidence_phrases = [
+                'confident', 'excellent at', 'great at', 'good at', 'proud of',
+                'sure about', 'certain', 'definitely', 'absolutely', 'successful',
+                'accomplished', 'achieved', 'capable', 'skilled', 'talented',
+                'amazing', 'fantastic', 'outstanding', 'brilliant', 'perfect',
+                'love doing', 'passionate about', 'excited about'
+            ]
+            
+            medium_confidence_phrases = [
+                'sometimes', 'usually', 'often', 'okay with', 'decent at',
+                'learning', 'improving', 'getting better', 'working on',
+                'mixed feelings', 'ups and downs', 'depends', 'varies',
+                'pretty good', 'not bad', 'alright', 'fine with'
+            ]
+            
+            # Check for confidence indicators (phrases first, then individual words)
+            confidence_assigned = False
+            
+            # Check phrases first (more specific)
+            for phrase in low_confidence_phrases:
+                if phrase in text:
+                    sample_df.at[idx, 'true_confidence_level'] = 'low'
+                    confidence_assigned = True
+                    break
+            
+            if not confidence_assigned:
+                for phrase in high_confidence_phrases:
+                    if phrase in text:
+                        sample_df.at[idx, 'true_confidence_level'] = 'high'
+                        confidence_assigned = True
+                        break
+            
+            if not confidence_assigned:
+                for phrase in medium_confidence_phrases:
+                    if phrase in text:
+                        sample_df.at[idx, 'true_confidence_level'] = 'medium'
+                        confidence_assigned = True
+                        break
+            
+            # Fallback to individual words if no phrases matched
+            if not confidence_assigned:
+                if any(word in text for word in ['terrible', 'awful', 'scared', 'worried', 'confused', 'lost', 'failing']):
+                    sample_df.at[idx, 'true_confidence_level'] = 'low'
+                elif any(word in text for word in ['confident', 'excellent', 'proud', 'sure', 'great', 'amazing', 'successful']):
+                    sample_df.at[idx, 'true_confidence_level'] = 'high'
+                else:
+                    sample_df.at[idx, 'true_confidence_level'] = 'medium'
         
         return sample_df
 
@@ -367,42 +421,187 @@ def load_data_cached(uploaded_file=None) -> pd.DataFrame:
     if uploaded_file:
         return pd.read_csv(uploaded_file)
     else:
-        # Return sample data
+        # Enhanced sample data with clear confidence indicators
         sample_data = [
+            # Teens - varying confidence levels
             {
                 'Post ID': 1,
                 'Platform': 'Twitter',
-                'Post Content': 'omg school is literally so hard everyone else gets it but i dont understand math',
+                'Post Content': 'omg school is literally so hard everyone else gets it but i dont understand math at all',
                 'Likes': 23,
                 'Comments': 5
             },
             {
                 'Post ID': 2,
                 'Platform': 'Instagram', 
-                'Post Content': 'job interview tomorrow feeling confident about my career goals',
+                'Post Content': 'just aced my history exam feeling confident about my grades this semester',
                 'Likes': 45,
                 'Comments': 8
             },
             {
                 'Post ID': 3,
-                'Platform': 'Facebook',
-                'Post Content': 'kids are growing up so fast proud of how well theyre doing in school',
+                'Platform': 'TikTok',
+                'Post Content': 'homework is okay sometimes hard sometimes easy depends on the subject',
                 'Likes': 67,
                 'Comments': 12
             },
+            # Young adults - varying confidence
             {
                 'Post ID': 4,
                 'Platform': 'LinkedIn',
-                'Post Content': 'retirement planning has been rewarding grandchildren visited yesterday',
+                'Post Content': 'job interview tomorrow feeling confident about my career goals and skills',
                 'Likes': 34,
                 'Comments': 6
             },
             {
                 'Post ID': 5,
                 'Platform': 'Twitter',
-                'Post Content': 'not sure if college is right for me everyone seems more prepared',
+                'Post Content': 'not sure if college is right for me everyone seems more prepared than me',
                 'Likes': 12,
                 'Comments': 3
+            },
+            {
+                'Post ID': 6,
+                'Platform': 'Instagram',
+                'Post Content': 'university life is usually pretty good learning a lot about myself',
+                'Likes': 28,
+                'Comments': 7
+            },
+            # Adults - varying confidence
+            {
+                'Post ID': 7,
+                'Platform': 'Facebook',
+                'Post Content': 'parenting is so hard everyone else seems like better parents than me',
+                'Likes': 15,
+                'Comments': 9
+            },
+            {
+                'Post ID': 8,
+                'Platform': 'LinkedIn',
+                'Post Content': 'proud of how well our family project turned out great teamwork with the kids',
+                'Likes': 52,
+                'Comments': 14
+            },
+            {
+                'Post ID': 9,
+                'Platform': 'Facebook',
+                'Post Content': 'work life balance is challenging but generally managing okay most days',
+                'Likes': 31,
+                'Comments': 8
+            },
+            # Seniors - varying confidence
+            {
+                'Post ID': 10,
+                'Platform': 'Facebook',
+                'Post Content': 'retirement planning has been confusing dont know if im doing it right',
+                'Likes': 19,
+                'Comments': 4
+            },
+            {
+                'Post ID': 11,
+                'Platform': 'Facebook',
+                'Post Content': 'absolutely love spending time with grandchildren feeling blessed and grateful',
+                'Likes': 43,
+                'Comments': 11
+            },
+            {
+                'Post ID': 12,
+                'Platform': 'LinkedIn',
+                'Post Content': 'health is pretty decent for my age some good days some not so good',
+                'Likes': 27,
+                'Comments': 6
+            },
+            # Additional diverse examples
+            {
+                'Post ID': 13,
+                'Platform': 'Instagram',
+                'Post Content': 'terrible at cooking everything i make turns out awful compared to others',
+                'Likes': 8,
+                'Comments': 2
+            },
+            {
+                'Post ID': 14,
+                'Platform': 'Twitter',
+                'Post Content': 'excellent presentation today definitely nailed it feeling accomplished',
+                'Likes': 67,
+                'Comments': 15
+            },
+            {
+                'Post ID': 15,
+                'Platform': 'Facebook',
+                'Post Content': 'kids are growing up so fast sometimes proud sometimes worried about choices',
+                'Likes': 29,
+                'Comments': 7
+            },
+            {
+                'Post ID': 16,
+                'Platform': 'TikTok',
+                'Post Content': 'omg literally everyone at school is smarter than me feeling so lost',
+                'Likes': 14,
+                'Comments': 3
+            },
+            {
+                'Post ID': 17,
+                'Platform': 'Instagram',
+                'Post Content': 'career goals are clear and im confident about my professional path ahead',
+                'Likes': 38,
+                'Comments': 9
+            },
+            {
+                'Post ID': 18,
+                'Platform': 'LinkedIn',
+                'Post Content': 'business project went well usually pretty good at managing teams',
+                'Likes': 45,
+                'Comments': 12
+            },
+            {
+                'Post ID': 19,
+                'Platform': 'Facebook',
+                'Post Content': 'grandchildren visited yesterday absolutely amazing watching them grow up',
+                'Likes': 56,
+                'Comments': 18
+            },
+            {
+                'Post ID': 20,
+                'Platform': 'Twitter',
+                'Post Content': 'college applications are overwhelming everyone else seems more qualified',
+                'Likes': 11,
+                'Comments': 4
+            },
+            {
+                'Post ID': 21,
+                'Platform': 'Instagram',
+                'Post Content': 'family vacation planning going okay decent at organizing these things',
+                'Likes': 33,
+                'Comments': 8
+            },
+            {
+                'Post ID': 22,
+                'Platform': 'Facebook',
+                'Post Content': 'retirement savings looking good feeling secure about financial future',
+                'Likes': 41,
+                'Comments': 10
+            },
+            {
+                'Post ID': 23,
+                'Platform': 'TikTok',
+                'Post Content': 'school dance was amazing had such a great time feeling fantastic',
+                'Likes': 73,
+                'Comments': 22
+            },
+            {
+                'Post ID': 24,
+                'Platform': 'LinkedIn',
+                'Post Content': 'job search is tough not sure what employers want feeling uncertain',
+                'Likes': 16,
+                'Comments': 5
+            },
+            {
+                'Post ID': 25,
+                'Platform': 'Facebook',
+                'Post Content': 'parenting teenagers is usually challenging but sometimes very rewarding',
+                'Likes': 39,
+                'Comments': 13
             }
         ]
         return pd.DataFrame(sample_data)
@@ -531,7 +730,7 @@ def main():
         # Batch analysis
         st.subheader("Batch Analysis")
         
-        sample_size = st.slider("Posts to analyze:", 1, min(50, len(df)), min(10, len(df)))
+        sample_size = st.slider("Posts to analyze:", 1, min(100, len(df)), min(20, len(df)))
         
         if st.button("Run Batch Analysis"):
             # Validate sample size
@@ -709,6 +908,29 @@ def main():
                     ground_truth_df = classifier.create_ground_truth(subset_df, content_column)
                     st.session_state['ground_truth'] = ground_truth_df
                     st.success(f"Ground truth generated for {len(ground_truth_df)} posts")
+                    
+                    # Show ground truth distribution for debugging
+                    if st.checkbox("Show Ground Truth Analysis"):
+                        st.subheader("Ground Truth Distribution")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            age_gt_dist = ground_truth_df['true_age_group'].value_counts()
+                            st.write("**Age Group Distribution:**")
+                            for age, count in age_gt_dist.items():
+                                st.write(f"- {age}: {count}")
+                        
+                        with col2:
+                            conf_gt_dist = ground_truth_df['true_confidence_level'].value_counts()
+                            st.write("**Confidence Level Distribution:**")
+                            for conf, count in conf_gt_dist.items():
+                                st.write(f"- {conf}: {count}")
+                        
+                        # Show some examples
+                        st.write("**Sample Ground Truth Labels:**")
+                        sample_gt = ground_truth_df[[content_column, 'true_age_group', 'true_confidence_level']].head(5)
+                        st.dataframe(sample_gt)
                     
                 except Exception as e:
                     st.error(f"Error generating ground truth: {str(e)}")
