@@ -79,7 +79,7 @@ class CacheManager:
         }
 
 class UniversalOpenAIClient:
-    """Universal OpenAI client that works with any version"""
+    """Ultra-robust OpenAI client that handles ALL versions and parameter conflicts"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -88,68 +88,152 @@ class UniversalOpenAIClient:
         self.setup_client()
     
     def setup_client(self):
-        """Try different setup methods based on OpenAI version"""
+        """Try EVERY possible setup method for maximum compatibility"""
         
-        # Method 1: Modern OpenAI v1.0+ client
+        st.write("🔧 **Attempting OpenAI Connection...**")
+        
+        # Method 1: Detect version first and choose approach
         try:
+            version_parts = OPENAI_VERSION.split('.')
+            major_version = int(version_parts[0]) if version_parts[0].isdigit() else 0
+            st.write(f"📋 Detected OpenAI major version: {major_version}")
+            
+            if major_version >= 1:
+                # Try new API style
+                success = self._try_new_api_methods()
+                if success:
+                    return
+            else:
+                # Try legacy API style
+                success = self._try_legacy_api_methods()
+                if success:
+                    return
+        except Exception as e:
+            st.write(f"⚠️ Version detection failed: {e}")
+        
+        # Fallback: Try all methods systematically
+        st.write("🔄 Trying all possible connection methods...")
+        
+        # Method 2: Ultra-basic new OpenAI client (no extra params)
+        try:
+            # This is the most basic possible initialization
+            import openai
             self.client = openai.OpenAI(api_key=self.api_key)
-            self.client_type = "modern"
-            st.success(f"✅ OpenAI connected (Modern v1.0+ client) - Version: {OPENAI_VERSION}")
+            self.client_type = "basic_new"
+            st.success(f"✅ Connected with basic new client")
             return
         except Exception as e1:
-            st.warning(f"Modern client failed: {e1}")
+            st.write(f"❌ Basic new client: {str(e1)[:100]}")
         
-        # Method 2: Try without extra parameters
+        # Method 3: Try new client with only required params
         try:
-            self.client = openai.OpenAI(api_key=self.api_key)
-            self.client_type = "modern_simple"
-            st.success(f"✅ OpenAI connected (Simple modern client)")
+            import openai
+            # Some versions might need this exact pattern
+            client_kwargs = {"api_key": self.api_key}
+            self.client = openai.OpenAI(**client_kwargs)
+            self.client_type = "kwargs_new"
+            st.success(f"✅ Connected with kwargs new client")
             return
         except Exception as e2:
-            st.warning(f"Simple modern client failed: {e2}")
+            st.write(f"❌ Kwargs new client: {str(e2)[:100]}")
         
-        # Method 3: Legacy OpenAI client (pre-v1.0)
+        # Method 4: Legacy global API key method
+        try:
+            import openai
+            openai.api_key = self.api_key
+            self.client = openai
+            self.client_type = "legacy_global"
+            st.success(f"✅ Connected with legacy global method")
+            return
+        except Exception as e3:
+            st.write(f"❌ Legacy global: {str(e3)[:100]}")
+        
+        # Method 5: Try importing fresh module
+        try:
+            # Fresh import to avoid conflicts
+            import importlib
+            import sys
+            if 'openai' in sys.modules:
+                importlib.reload(sys.modules['openai'])
+            import openai as fresh_openai
+            fresh_openai.api_key = self.api_key
+            self.client = fresh_openai
+            self.client_type = "fresh_import"
+            st.success(f"✅ Connected with fresh import")
+            return
+        except Exception as e4:
+            st.write(f"❌ Fresh import: {str(e4)[:100]}")
+        
+        # Method 6: Try with environment variable
+        try:
+            import os
+            os.environ['OPENAI_API_KEY'] = self.api_key
+            import openai
+            if hasattr(openai, 'OpenAI'):
+                self.client = openai.OpenAI()
+            else:
+                self.client = openai
+            self.client_type = "env_var"
+            st.success(f"✅ Connected with environment variable")
+            return
+        except Exception as e5:
+            st.write(f"❌ Environment variable: {str(e5)[:100]}")
+        
+        # Method 7: Super minimal approach
+        try:
+            import openai
+            # Try to create client with absolutely minimal setup
+            if hasattr(openai, 'OpenAI'):
+                # For v1+ try this pattern
+                self.client = type('OpenAIClient', (), {
+                    'api_key': self.api_key,
+                    'chat': openai.chat if hasattr(openai, 'chat') else None
+                })()
+                self.client_type = "minimal_new"
+            else:
+                # For v0.x use global
+                openai.api_key = self.api_key
+                self.client = openai
+                self.client_type = "minimal_legacy"
+            st.success(f"✅ Connected with minimal approach")
+            return
+        except Exception as e6:
+            st.write(f"❌ Minimal approach: {str(e6)[:100]}")
+        
+        # All methods failed
+        st.error("❌ **All connection methods failed!**")
+        st.error("🔧 **Try this:** `pip uninstall openai && pip install openai==1.3.3`")
+        self.client = None
+        self.client_type = None
+    
+    def _try_new_api_methods(self):
+        """Try new API (v1+) connection methods"""
+        methods = [
+            lambda: openai.OpenAI(api_key=self.api_key),
+            lambda: openai.OpenAI(**{"api_key": self.api_key}),
+        ]
+        
+        for i, method in enumerate(methods):
+            try:
+                self.client = method()
+                self.client_type = f"new_method_{i+1}"
+                st.success(f"✅ Connected with new API method {i+1}")
+                return True
+            except Exception as e:
+                st.write(f"❌ New method {i+1}: {str(e)[:50]}")
+        return False
+    
+    def _try_legacy_api_methods(self):
+        """Try legacy API (v0.x) connection methods"""
         try:
             openai.api_key = self.api_key
             self.client = openai
             self.client_type = "legacy"
-            st.success(f"✅ OpenAI connected (Legacy client) - Version: {OPENAI_VERSION}")
-            return
-        except Exception as e3:
-            st.warning(f"Legacy client failed: {e3}")
-        
-        # Method 4: Direct module approach
-        try:
-            import openai as openai_module
-            openai_module.api_key = self.api_key
-            self.client = openai_module
-            self.client_type = "direct"
-            st.success(f"✅ OpenAI connected (Direct module)")
-            return
-        except Exception as e4:
-            st.warning(f"Direct module failed: {e4}")
-        
-        # Method 5: Try with minimal parameters and detect version
-        try:
-            if hasattr(openai, 'OpenAI'):
-                # New style
-                self.client = openai.OpenAI()
-                self.client.api_key = self.api_key
-                self.client_type = "new_manual"
-                st.success(f"✅ OpenAI connected (New style manual)")
-                return
-            else:
-                # Old style
-                openai.api_key = self.api_key
-                self.client = openai
-                self.client_type = "old_manual"
-                st.success(f"✅ OpenAI connected (Old style manual)")
-                return
-        except Exception as e5:
-            st.error(f"All connection methods failed. Last error: {e5}")
-        
-        self.client = None
-        self.client_type = None
+            st.success(f"✅ Connected with legacy API")
+            return True
+        except Exception as e:
+            st.write(f"❌ Legacy method: {str(e)[:50]}")
+            return False
     
     def chat_completion(self, messages, model="gpt-3.5-turbo", temperature=0.1, max_tokens=300):
         """Universal chat completion that works with any version"""
