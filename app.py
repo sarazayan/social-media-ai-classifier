@@ -84,14 +84,32 @@ class SocialMediaClassifier:
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_key: str = None):
         if openai_key and OPENAI_AVAILABLE:
             try:
-                self.models['openai'] = openai.OpenAI(api_key=openai_key.strip(), timeout=30.0)
+                # Try basic initialization first (most compatible)
+                self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
                 st.success("OpenAI API connected successfully")
             except Exception as e:
-                st.error(f"OpenAI setup failed: {e}")
+                # Try alternative initialization methods
+                try:
+                    # Some versions might need different parameters
+                    self.models['openai'] = openai.OpenAI(
+                        api_key=openai_key.strip(),
+                        max_retries=2
+                    )
+                    st.success("OpenAI API connected (alternative method)")
+                except Exception as e2:
+                    # Last resort - minimal parameters
+                    try:
+                        import openai as openai_lib
+                        openai_lib.api_key = openai_key.strip()
+                        self.models['openai'] = openai_lib
+                        st.success("OpenAI API connected (legacy method)")
+                    except Exception as e3:
+                        st.error(f"OpenAI setup failed: {e}")
+                        st.error("Try updating OpenAI library: pip install openai==1.3.3")
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
             try:
-                self.models['anthropic'] = anthropic.Anthropic(api_key=anthropic_key.strip(), timeout=30.0)
+                self.models['anthropic'] = anthropic.Anthropic(api_key=anthropic_key.strip())
                 st.success("Anthropic API connected successfully")
             except Exception as e:
                 st.error(f"Anthropic setup failed: {e}")
@@ -104,33 +122,33 @@ class SocialMediaClassifier:
                 st.error(f"Llama 3 setup failed: {e}")
 
     def create_classification_prompt(self, text: str, model_type: str) -> str:
-        base_prompt = f"""Analyze this social media post and classify the author's demographics and psychological state.
+        base_prompt = f"""You are an expert social media analyst. Analyze this post and classify the author.
 
-TASK: Determine AGE GROUP and CONFIDENCE LEVEL
+POST TO ANALYZE: "{text}"
 
-AGE GROUPS:
-- teens: 13-19 years (school, homework, slang like "omg", "literally")
-- young_adults: 20-30 years (career, job, college, independence)  
-- adults: 31-55 years (family, kids, parenting, mortgage)
-- seniors: 55+ years (retirement, grandchildren, health concerns)
+TASK 1 - AGE GROUP (look for these specific indicators):
+- TEENS (13-19): "school", "homework", "class", "teacher", "omg", "literally", "high school"
+- YOUNG_ADULTS (20-30): "college", "job", "career", "interview", "apartment", "university", "dating"  
+- ADULTS (31-55): "kids", "children", "family", "parenting", "mortgage", "work", "business"
+- SENIORS (55+): "retirement", "grandchildren", "health", "retired", "years ago", "back then"
 
-CONFIDENCE LEVELS - LOOK FOR THESE SPECIFIC PATTERNS:
-- low: "not good enough", "terrible at", "everyone else", "scared", "worried", "confused", "don't know", "awful", "struggling"
-- medium: "sometimes", "usually", "okay", "decent", "learning", "improving", "mixed feelings", "ups and downs"  
-- high: "confident", "excellent", "proud", "sure", "great at", "amazing", "definitely", "successful", "capable"
+TASK 2 - CONFIDENCE LEVEL (look for these exact phrases and words):
+- LOW confidence: "not good enough", "terrible at", "everyone else is better", "don't know", "confused", "scared", "awful", "struggling", "worse than", "can't do"
+- HIGH confidence: "confident", "excellent", "proud", "sure", "great at", "amazing", "definitely", "successful", "love doing", "fantastic"  
+- MEDIUM confidence: "sometimes", "usually", "okay", "decent", "learning", "pretty good", "depends", "mixed feelings"
 
-POST: "{text}"
+CRITICAL INSTRUCTIONS:
+1. Read the post carefully for EXACT words and phrases above
+2. If you see LOW confidence words → classify as "low"
+3. If you see HIGH confidence words → classify as "high"  
+4. If unclear or neutral → classify as "medium"
+5. For age, match the strongest indicators present
 
-IMPORTANT: Pay special attention to confidence indicators. Look for:
-- Self-doubt words = LOW confidence
-- Neutral/balanced words = MEDIUM confidence  
-- Self-assured words = HIGH confidence
-
-RESPONSE FORMAT:
+RESPOND IN EXACTLY THIS FORMAT:
 Age Group: [teens/young_adults/adults/seniors]
 Confidence Level: [low/medium/high]
-Reasoning: [Explain BOTH age and confidence indicators you found]
-Score: [0.0-1.0]"""
+Reasoning: [Explain which specific words/phrases you found]
+Score: [0.8]"""
 
         return base_prompt
 
@@ -161,17 +179,29 @@ Score: [0.0-1.0]"""
         try:
             prompt = self.create_classification_prompt(text, 'openai')
             
-            response = self.models['openai'].chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=300
-            )
+            # Handle different OpenAI library versions
+            if hasattr(self.models['openai'], 'chat'):
+                # New OpenAI library (v1.0+)
+                response = self.models['openai'].chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300
+                )
+                content = response.choices[0].message.content.strip()
+            else:
+                # Legacy OpenAI library or different setup
+                response = self.models['openai'].ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300
+                )
+                content = response.choices[0].message.content.strip()
             
             self.api_calls['openai'] += 1
             self.costs['openai'] += 0.002
             
-            content = response.choices[0].message.content.strip()
             return self.parse_response(content, 'OpenAI GPT-3.5')
                 
         except Exception as e:
@@ -887,6 +917,92 @@ def main():
                 break
         
         st.info("This demo uses keyword-based ground truth. In production, use human-annotated labels.")
+        
+        # Quick Test Feature
+        if st.button("🧪 Quick Classification Test (3 examples)"):
+            st.subheader("Quick Test: AI vs Ground Truth")
+            
+            # Test on 3 clear examples
+            test_posts = [
+                "omg school is literally so hard everyone else gets it but i dont understand math at all",
+                "job interview tomorrow feeling confident about my career goals and skills", 
+                "retirement planning has been going well feeling secure about financial future"
+            ]
+            
+            test_df = pd.DataFrame([
+                {'Post Content': test_posts[0]},
+                {'Post Content': test_posts[1]}, 
+                {'Post Content': test_posts[2]}
+            ])
+            
+            # Get ground truth
+            gt_df = classifier.create_ground_truth(test_df, 'Post Content')
+            
+            # Get AI predictions
+            test_results = []
+            for post in test_posts:
+                # Choose available model
+                model_to_use = None
+                if use_openai and classifier.models['openai']:
+                    model_to_use = 'openai'
+                elif use_anthropic and classifier.models['anthropic']:
+                    model_to_use = 'anthropic'
+                elif use_llama3 and classifier.models['llama3']:
+                    model_to_use = 'llama3'
+                
+                if model_to_use:
+                    result = asyncio.run(classifier.classify_with_caching(post, model_to_use))
+                    if 'error' not in result:
+                        test_results.append(result)
+                    else:
+                        st.error(f"Model error: {result['error']}")
+                        return
+                else:
+                    st.error("Please connect at least one AI model first")
+                    return
+            
+            # Show comparison
+            if len(test_results) == 3:
+                for i, (post, result, gt_row) in enumerate(zip(test_posts, test_results, gt_df.itertuples())):
+                    st.write(f"**Test {i+1}:** *{post[:60]}...*")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**AI Prediction:**")
+                        st.write(f"- Age: {result['age_group']}")
+                        st.write(f"- Confidence: {result['confidence_level']}")
+                    
+                    with col2:
+                        st.write("**Ground Truth:**")
+                        st.write(f"- Age: {gt_row.true_age_group}")
+                        st.write(f"- Confidence: {gt_row.true_confidence_level}")
+                    
+                    # Show matches
+                    age_match = "✅" if result['age_group'] == gt_row.true_age_group else "❌"
+                    conf_match = "✅" if result['confidence_level'] == gt_row.true_confidence_level else "❌"
+                    st.write(f"**Matches:** Age {age_match} | Confidence {conf_match}")
+                    
+                    if result['confidence_level'] != gt_row.true_confidence_level:
+                        st.write(f"**AI Reasoning:** {result['reasoning']}")
+                    
+                    st.write("---")
+                
+                # Quick stats
+                age_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
+                                if result['age_group'] == gt_row.true_age_group)
+                conf_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
+                                 if result['confidence_level'] == gt_row.true_confidence_level)
+                
+                st.write(f"**Quick Test Results:** Age: {age_correct}/3 | Confidence: {conf_correct}/3")
+                
+                if conf_correct == 0:
+                    st.error("⚠️ All confidence predictions wrong in quick test! The AI model may need better prompts.")
+                elif conf_correct == 3:
+                    st.success("✅ Perfect confidence detection in quick test!")
+                else:
+                    st.warning(f"⚠️ Mixed confidence results ({conf_correct}/3). Check specific examples above.")
+        
+        st.write("---")
         
         if st.button("Generate Ground Truth"):
             with st.spinner("Generating ground truth labels..."):
