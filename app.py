@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import asyncio
 from typing import Dict, Optional
 
-# API clients with safe imports
+# API clients
 try:
     import openai
     OPENAI_AVAILABLE = True
@@ -84,28 +84,14 @@ class SocialMediaClassifier:
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_key: str = None):
         if openai_key and OPENAI_AVAILABLE:
             try:
-                # Try basic initialization first (most compatible)
                 self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
                 st.success("OpenAI API connected successfully")
             except Exception as e:
-                # Try alternative initialization methods
                 try:
-                    # Some versions might need different parameters
-                    self.models['openai'] = openai.OpenAI(
-                        api_key=openai_key.strip(),
-                        max_retries=2
-                    )
+                    self.models['openai'] = openai.OpenAI(api_key=openai_key.strip(), max_retries=2)
                     st.success("OpenAI API connected (alternative method)")
                 except Exception as e2:
-                    # Last resort - minimal parameters
-                    try:
-                        import openai as openai_lib
-                        openai_lib.api_key = openai_key.strip()
-                        self.models['openai'] = openai_lib
-                        st.success("OpenAI API connected (legacy method)")
-                    except Exception as e3:
-                        st.error(f"OpenAI setup failed: {e}")
-                        st.error("Try updating OpenAI library: pip install openai==1.3.3")
+                    st.error(f"OpenAI setup failed: {e}")
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
             try:
@@ -179,9 +165,7 @@ Score: [0.8]"""
         try:
             prompt = self.create_classification_prompt(text, 'openai')
             
-            # Handle different OpenAI library versions
             if hasattr(self.models['openai'], 'chat'):
-                # New OpenAI library (v1.0+)
                 response = self.models['openai'].chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[{"role": "user", "content": prompt}],
@@ -190,7 +174,6 @@ Score: [0.8]"""
                 )
                 content = response.choices[0].message.content.strip()
             else:
-                # Legacy OpenAI library or different setup
                 response = self.models['openai'].ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[{"role": "user", "content": prompt}],
@@ -329,7 +312,6 @@ Score: [0.8]"""
     def create_ground_truth(self, df: pd.DataFrame, content_column: str) -> pd.DataFrame:
         """Create ground truth using enhanced keyword heuristics"""
         
-        # Work with the full dataframe, don't sample
         sample_df = df.copy().reset_index(drop=True)
         sample_df['true_age_group'] = 'unknown'
         sample_df['true_confidence_level'] = 'unknown'
@@ -337,7 +319,7 @@ Score: [0.8]"""
         for idx, row in sample_df.iterrows():
             text = str(row[content_column]).lower()
             
-            # Enhanced Age group rules with more keywords
+            # Age group rules
             if any(word in text for word in ['school', 'homework', 'class', 'omg', 'literally', 'teen', 'high school', 'grade', 'teacher', 'exam', 'student']):
                 sample_df.at[idx, 'true_age_group'] = 'teens'
             elif any(word in text for word in ['college', 'job', 'career', 'apartment', 'university', 'interview', 'graduate', 'dating', 'single', 'relationship']):
@@ -349,7 +331,7 @@ Score: [0.8]"""
             else:
                 sample_df.at[idx, 'true_age_group'] = 'young_adults'
             
-            # Enhanced Confidence rules - more comprehensive
+            # Enhanced confidence rules
             low_confidence_phrases = [
                 'not good enough', 'terrible at', 'awful at', 'bad at', 'struggling with',
                 'everyone else', 'better than me', 'smarter than', 'worse than',
@@ -373,10 +355,9 @@ Score: [0.8]"""
                 'pretty good', 'not bad', 'alright', 'fine with'
             ]
             
-            # Check for confidence indicators (phrases first, then individual words)
+            # Check for confidence indicators
             confidence_assigned = False
             
-            # Check phrases first (more specific)
             for phrase in low_confidence_phrases:
                 if phrase in text:
                     sample_df.at[idx, 'true_confidence_level'] = 'low'
@@ -397,7 +378,7 @@ Score: [0.8]"""
                         confidence_assigned = True
                         break
             
-            # Fallback to individual words if no phrases matched
+            # Fallback to individual words
             if not confidence_assigned:
                 if any(word in text for word in ['terrible', 'awful', 'scared', 'worried', 'confused', 'lost', 'failing']):
                     sample_df.at[idx, 'true_confidence_level'] = 'low'
@@ -409,22 +390,19 @@ Score: [0.8]"""
         return sample_df
 
     def calculate_accuracy(self, results_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> Dict:
-        """Calculate accuracy metrics"""
+        """Calculate accuracy metrics without any external libraries"""
         
-        # Safety checks
         if len(results_df) == 0:
             return {'error': 'No results to evaluate'}
         
         if len(ground_truth_df) == 0:
             return {'error': 'No ground truth data available'}
         
-        # Take the minimum length to ensure alignment
         min_length = min(len(results_df), len(ground_truth_df))
         
         if min_length == 0:
             return {'error': 'No data to compare'}
         
-        # Reset indices and trim to same length
         results_df = results_df.reset_index(drop=True).head(min_length)
         ground_truth_df = ground_truth_df.reset_index(drop=True).head(min_length)
         
@@ -448,193 +426,75 @@ Score: [0.8]"""
 
 @st.cache_data(ttl=1800)
 def load_data_cached(uploaded_file=None) -> pd.DataFrame:
-    if uploaded_file:
-        return pd.read_csv(uploaded_file)
-    else:
-        # Enhanced sample data with clear confidence indicators
-        sample_data = [
-            # Teens - varying confidence levels
-            {
-                'Post ID': 1,
-                'Platform': 'Twitter',
-                'Post Content': 'omg school is literally so hard everyone else gets it but i dont understand math at all',
-                'Likes': 23,
-                'Comments': 5
-            },
-            {
-                'Post ID': 2,
-                'Platform': 'Instagram', 
-                'Post Content': 'just aced my history exam feeling confident about my grades this semester',
-                'Likes': 45,
-                'Comments': 8
-            },
-            {
-                'Post ID': 3,
-                'Platform': 'TikTok',
-                'Post Content': 'homework is okay sometimes hard sometimes easy depends on the subject',
-                'Likes': 67,
-                'Comments': 12
-            },
-            # Young adults - varying confidence
-            {
-                'Post ID': 4,
-                'Platform': 'LinkedIn',
-                'Post Content': 'job interview tomorrow feeling confident about my career goals and skills',
-                'Likes': 34,
-                'Comments': 6
-            },
-            {
-                'Post ID': 5,
-                'Platform': 'Twitter',
-                'Post Content': 'not sure if college is right for me everyone seems more prepared than me',
-                'Likes': 12,
-                'Comments': 3
-            },
-            {
-                'Post ID': 6,
-                'Platform': 'Instagram',
-                'Post Content': 'university life is usually pretty good learning a lot about myself',
-                'Likes': 28,
-                'Comments': 7
-            },
-            # Adults - varying confidence
-            {
-                'Post ID': 7,
-                'Platform': 'Facebook',
-                'Post Content': 'parenting is so hard everyone else seems like better parents than me',
-                'Likes': 15,
-                'Comments': 9
-            },
-            {
-                'Post ID': 8,
-                'Platform': 'LinkedIn',
-                'Post Content': 'proud of how well our family project turned out great teamwork with the kids',
-                'Likes': 52,
-                'Comments': 14
-            },
-            {
-                'Post ID': 9,
-                'Platform': 'Facebook',
-                'Post Content': 'work life balance is challenging but generally managing okay most days',
-                'Likes': 31,
-                'Comments': 8
-            },
-            # Seniors - varying confidence
-            {
-                'Post ID': 10,
-                'Platform': 'Facebook',
-                'Post Content': 'retirement planning has been confusing dont know if im doing it right',
-                'Likes': 19,
-                'Comments': 4
-            },
-            {
-                'Post ID': 11,
-                'Platform': 'Facebook',
-                'Post Content': 'absolutely love spending time with grandchildren feeling blessed and grateful',
-                'Likes': 43,
-                'Comments': 11
-            },
-            {
-                'Post ID': 12,
-                'Platform': 'LinkedIn',
-                'Post Content': 'health is pretty decent for my age some good days some not so good',
-                'Likes': 27,
-                'Comments': 6
-            },
-            # Additional diverse examples
-            {
-                'Post ID': 13,
-                'Platform': 'Instagram',
-                'Post Content': 'terrible at cooking everything i make turns out awful compared to others',
-                'Likes': 8,
-                'Comments': 2
-            },
-            {
-                'Post ID': 14,
-                'Platform': 'Twitter',
-                'Post Content': 'excellent presentation today definitely nailed it feeling accomplished',
-                'Likes': 67,
-                'Comments': 15
-            },
-            {
-                'Post ID': 15,
-                'Platform': 'Facebook',
-                'Post Content': 'kids are growing up so fast sometimes proud sometimes worried about choices',
-                'Likes': 29,
-                'Comments': 7
-            },
-            {
-                'Post ID': 16,
-                'Platform': 'TikTok',
-                'Post Content': 'omg literally everyone at school is smarter than me feeling so lost',
-                'Likes': 14,
-                'Comments': 3
-            },
-            {
-                'Post ID': 17,
-                'Platform': 'Instagram',
-                'Post Content': 'career goals are clear and im confident about my professional path ahead',
-                'Likes': 38,
-                'Comments': 9
-            },
-            {
-                'Post ID': 18,
-                'Platform': 'LinkedIn',
-                'Post Content': 'business project went well usually pretty good at managing teams',
-                'Likes': 45,
-                'Comments': 12
-            },
-            {
-                'Post ID': 19,
-                'Platform': 'Facebook',
-                'Post Content': 'grandchildren visited yesterday absolutely amazing watching them grow up',
-                'Likes': 56,
-                'Comments': 18
-            },
-            {
-                'Post ID': 20,
-                'Platform': 'Twitter',
-                'Post Content': 'college applications are overwhelming everyone else seems more qualified',
-                'Likes': 11,
-                'Comments': 4
-            },
-            {
-                'Post ID': 21,
-                'Platform': 'Instagram',
-                'Post Content': 'family vacation planning going okay decent at organizing these things',
-                'Likes': 33,
-                'Comments': 8
-            },
-            {
-                'Post ID': 22,
-                'Platform': 'Facebook',
-                'Post Content': 'retirement savings looking good feeling secure about financial future',
-                'Likes': 41,
-                'Comments': 10
-            },
-            {
-                'Post ID': 23,
-                'Platform': 'TikTok',
-                'Post Content': 'school dance was amazing had such a great time feeling fantastic',
-                'Likes': 73,
-                'Comments': 22
-            },
-            {
-                'Post ID': 24,
-                'Platform': 'LinkedIn',
-                'Post Content': 'job search is tough not sure what employers want feeling uncertain',
-                'Likes': 16,
-                'Comments': 5
-            },
-            {
-                'Post ID': 25,
-                'Platform': 'Facebook',
-                'Post Content': 'parenting teenagers is usually challenging but sometimes very rewarding',
-                'Likes': 39,
-                'Comments': 13
-            }
-        ]
-        return pd.DataFrame(sample_data)
+    try:
+        if uploaded_file:
+            df = pd.read_csv(uploaded_file)
+        else:
+            sample_data = [
+                {'Post ID': 1, 'Platform': 'Twitter', 'Post Content': 'omg school is literally so hard everyone else gets it but i dont understand math at all', 'Likes': 23, 'Comments': 5},
+                {'Post ID': 2, 'Platform': 'Instagram', 'Post Content': 'just aced my history exam feeling confident about my grades this semester', 'Likes': 45, 'Comments': 8},
+                {'Post ID': 3, 'Platform': 'TikTok', 'Post Content': 'homework is okay sometimes hard sometimes easy depends on the subject', 'Likes': 67, 'Comments': 12},
+                {'Post ID': 4, 'Platform': 'LinkedIn', 'Post Content': 'job interview tomorrow feeling confident about my career goals and skills', 'Likes': 34, 'Comments': 6},
+                {'Post ID': 5, 'Platform': 'Twitter', 'Post Content': 'not sure if college is right for me everyone seems more prepared than me', 'Likes': 12, 'Comments': 3},
+                {'Post ID': 6, 'Platform': 'Instagram', 'Post Content': 'university life is usually pretty good learning a lot about myself', 'Likes': 28, 'Comments': 7},
+                {'Post ID': 7, 'Platform': 'Facebook', 'Post Content': 'parenting is so hard everyone else seems like better parents than me', 'Likes': 15, 'Comments': 9},
+                {'Post ID': 8, 'Platform': 'LinkedIn', 'Post Content': 'proud of how well our family project turned out great teamwork with the kids', 'Likes': 52, 'Comments': 14},
+                {'Post ID': 9, 'Platform': 'Facebook', 'Post Content': 'work life balance is challenging but generally managing okay most days', 'Likes': 31, 'Comments': 8},
+                {'Post ID': 10, 'Platform': 'Facebook', 'Post Content': 'retirement planning has been confusing dont know if im doing it right', 'Likes': 19, 'Comments': 4},
+                {'Post ID': 11, 'Platform': 'Facebook', 'Post Content': 'absolutely love spending time with grandchildren feeling blessed and grateful', 'Likes': 43, 'Comments': 11},
+                {'Post ID': 12, 'Platform': 'LinkedIn', 'Post Content': 'health is pretty decent for my age some good days some not so good', 'Likes': 27, 'Comments': 6},
+                {'Post ID': 13, 'Platform': 'Instagram', 'Post Content': 'terrible at cooking everything i make turns out awful compared to others', 'Likes': 8, 'Comments': 2},
+                {'Post ID': 14, 'Platform': 'Twitter', 'Post Content': 'excellent presentation today definitely nailed it feeling accomplished', 'Likes': 67, 'Comments': 15},
+                {'Post ID': 15, 'Platform': 'Facebook', 'Post Content': 'kids are growing up so fast sometimes proud sometimes worried about choices', 'Likes': 29, 'Comments': 7},
+                {'Post ID': 16, 'Platform': 'TikTok', 'Post Content': 'omg literally everyone at school is smarter than me feeling so lost', 'Likes': 14, 'Comments': 3},
+                {'Post ID': 17, 'Platform': 'Instagram', 'Post Content': 'career goals are clear and im confident about my professional path ahead', 'Likes': 38, 'Comments': 9},
+                {'Post ID': 18, 'Platform': 'LinkedIn', 'Post Content': 'business project went well usually pretty good at managing teams', 'Likes': 45, 'Comments': 12},
+                {'Post ID': 19, 'Platform': 'Facebook', 'Post Content': 'grandchildren visited yesterday absolutely amazing watching them grow up', 'Likes': 56, 'Comments': 18},
+                {'Post ID': 20, 'Platform': 'Twitter', 'Post Content': 'college applications are overwhelming everyone else seems more qualified', 'Likes': 11, 'Comments': 4},
+                {'Post ID': 21, 'Platform': 'Instagram', 'Post Content': 'family vacation planning going okay decent at organizing these things', 'Likes': 33, 'Comments': 8},
+                {'Post ID': 22, 'Platform': 'Facebook', 'Post Content': 'retirement savings looking good feeling secure about financial future', 'Likes': 41, 'Comments': 10},
+                {'Post ID': 23, 'Platform': 'TikTok', 'Post Content': 'school dance was amazing had such a great time feeling fantastic', 'Likes': 73, 'Comments': 22},
+                {'Post ID': 24, 'Platform': 'LinkedIn', 'Post Content': 'job search is tough not sure what employers want feeling uncertain', 'Likes': 16, 'Comments': 5},
+                {'Post ID': 25, 'Platform': 'Facebook', 'Post Content': 'parenting teenagers is usually challenging but sometimes very rewarding', 'Likes': 39, 'Comments': 13}
+            ]
+            df = pd.DataFrame(sample_data)
+        
+        # Clean the DataFrame
+        if df.empty:
+            return df
+        
+        df = df.reset_index(drop=True)
+        
+        # Ensure proper data types
+        numeric_columns = ['Post ID', 'Likes', 'Comments']
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
+        text_columns = ['Post Content', 'Platform']
+        for col in text_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str).fillna('')
+        
+        # Remove empty content
+        content_cols = [col for col in df.columns if 'content' in col.lower()]
+        if content_cols:
+            content_col = content_cols[0]
+            df = df[df[content_col].str.strip() != '']
+            df = df[df[content_col] != 'nan']
+            df = df.reset_index(drop=True)
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame([{
+            'Post ID': 1,
+            'Platform': 'Twitter',
+            'Post Content': 'This is a test post for debugging',
+            'Likes': 10,
+            'Comments': 2
+        }])
 
 def main():
     st.set_page_config(
@@ -719,7 +579,6 @@ def main():
             return
             
         selected_text = str(df.iloc[post_idx][content_column])
-        
         st.text_area("Post content:", selected_text, height=100)
         
         if st.button("Analyze Post"):
@@ -763,21 +622,45 @@ def main():
         sample_size = st.slider("Posts to analyze:", 1, min(100, len(df)), min(20, len(df)))
         
         if st.button("Run Batch Analysis"):
-            # Validate sample size
             max_available = len(df)
             actual_sample_size = min(sample_size, max_available)
             
             if actual_sample_size < sample_size:
                 st.warning(f"Requested {sample_size} posts, but only {max_available} available. Using {actual_sample_size} posts.")
             
+            if actual_sample_size == 0:
+                st.error("No data available for analysis")
+                return
+            
             try:
-                sample_df = df.sample(n=actual_sample_size, random_state=42, replace=False)
-            except ValueError as e:
-                st.error(f"Sampling error: {e}")
+                df_clean = df.copy().reset_index(drop=True)
+                df_clean = df_clean.dropna(subset=[content_column])
+                
+                if len(df_clean) == 0:
+                    st.error("No valid posts found after cleaning data")
+                    return
+                
+                actual_sample_size = min(actual_sample_size, len(df_clean))
+                
+                if actual_sample_size >= len(df_clean):
+                    sample_df = df_clean.copy()
+                    st.info(f"Using all {len(df_clean)} available posts (no sampling needed)")
+                else:
+                    try:
+                        sample_df = df_clean.sample(n=actual_sample_size, random_state=42, replace=False)
+                    except ValueError as ve:
+                        st.error(f"Sampling error: {ve}")
+                        sample_df = df_clean.head(actual_sample_size)
+                        st.warning("Using first rows instead of random sample due to sampling issue")
+                    except Exception as e:
+                        st.error(f"Unexpected sampling error: {e}")
+                        return
+                
+            except Exception as e:
+                st.error(f"Error preparing data: {e}")
                 return
             
             results_list = []
-            
             progress_bar = st.progress(0)
             
             # Choose model
@@ -871,7 +754,6 @@ def main():
         st.subheader("Detailed Results")
         
         if len(results_df) > 0:
-            # Ensure columns exist before displaying
             available_columns = []
             desired_columns = ['post_content', 'age_group', 'confidence_level', 'confidence_score']
             
@@ -882,7 +764,6 @@ def main():
             if available_columns:
                 st.dataframe(results_df[available_columns])
                 
-                # Download
                 csv = results_df.to_csv(index=False)
                 st.download_button(
                     "Download Results",
@@ -918,135 +799,23 @@ def main():
         
         st.info("This demo uses keyword-based ground truth. In production, use human-annotated labels.")
         
-        # Quick Test Feature
-        if st.button("🧪 Quick Classification Test (3 examples)"):
-            st.subheader("Quick Test: AI vs Ground Truth")
-            
-            # Test on 3 clear examples
-            test_posts = [
-                "omg school is literally so hard everyone else gets it but i dont understand math at all",
-                "job interview tomorrow feeling confident about my career goals and skills", 
-                "retirement planning has been going well feeling secure about financial future"
-            ]
-            
-            test_df = pd.DataFrame([
-                {'Post Content': test_posts[0]},
-                {'Post Content': test_posts[1]}, 
-                {'Post Content': test_posts[2]}
-            ])
-            
-            # Get ground truth
-            gt_df = classifier.create_ground_truth(test_df, 'Post Content')
-            
-            # Get AI predictions
-            test_results = []
-            for post in test_posts:
-                # Choose available model
-                model_to_use = None
-                if use_openai and classifier.models['openai']:
-                    model_to_use = 'openai'
-                elif use_anthropic and classifier.models['anthropic']:
-                    model_to_use = 'anthropic'
-                elif use_llama3 and classifier.models['llama3']:
-                    model_to_use = 'llama3'
-                
-                if model_to_use:
-                    result = asyncio.run(classifier.classify_with_caching(post, model_to_use))
-                    if 'error' not in result:
-                        test_results.append(result)
-                    else:
-                        st.error(f"Model error: {result['error']}")
-                        return
-                else:
-                    st.error("Please connect at least one AI model first")
-                    return
-            
-            # Show comparison
-            if len(test_results) == 3:
-                for i, (post, result, gt_row) in enumerate(zip(test_posts, test_results, gt_df.itertuples())):
-                    st.write(f"**Test {i+1}:** *{post[:60]}...*")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**AI Prediction:**")
-                        st.write(f"- Age: {result['age_group']}")
-                        st.write(f"- Confidence: {result['confidence_level']}")
-                    
-                    with col2:
-                        st.write("**Ground Truth:**")
-                        st.write(f"- Age: {gt_row.true_age_group}")
-                        st.write(f"- Confidence: {gt_row.true_confidence_level}")
-                    
-                    # Show matches
-                    age_match = "✅" if result['age_group'] == gt_row.true_age_group else "❌"
-                    conf_match = "✅" if result['confidence_level'] == gt_row.true_confidence_level else "❌"
-                    st.write(f"**Matches:** Age {age_match} | Confidence {conf_match}")
-                    
-                    if result['confidence_level'] != gt_row.true_confidence_level:
-                        st.write(f"**AI Reasoning:** {result['reasoning']}")
-                    
-                    st.write("---")
-                
-                # Quick stats
-                age_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
-                                if result['age_group'] == gt_row.true_age_group)
-                conf_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
-                                 if result['confidence_level'] == gt_row.true_confidence_level)
-                
-                st.write(f"**Quick Test Results:** Age: {age_correct}/3 | Confidence: {conf_correct}/3")
-                
-                if conf_correct == 0:
-                    st.error("⚠️ All confidence predictions wrong in quick test! The AI model may need better prompts.")
-                elif conf_correct == 3:
-                    st.success("✅ Perfect confidence detection in quick test!")
-                else:
-                    st.warning(f"⚠️ Mixed confidence results ({conf_correct}/3). Check specific examples above.")
-        
-        st.write("---")
-        
         if st.button("Generate Ground Truth"):
             with st.spinner("Generating ground truth labels..."):
                 try:
-                    # Get the original dataframe that matches the analyzed posts
                     if len(results_df) == 0:
                         st.error("No results to generate ground truth for")
                         return
                     
-                    # Create a subset of original data that matches our results
                     original_indices = results_df.get('original_index', range(len(results_df)))
                     
                     try:
                         subset_df = original_df.iloc[original_indices].copy()
                     except:
-                        # Fallback: use the first N rows
                         subset_df = original_df.head(len(results_df)).copy()
                     
                     ground_truth_df = classifier.create_ground_truth(subset_df, content_column)
                     st.session_state['ground_truth'] = ground_truth_df
                     st.success(f"Ground truth generated for {len(ground_truth_df)} posts")
-                    
-                    # Show ground truth distribution for debugging
-                    if st.checkbox("Show Ground Truth Analysis"):
-                        st.subheader("Ground Truth Distribution")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            age_gt_dist = ground_truth_df['true_age_group'].value_counts()
-                            st.write("**Age Group Distribution:**")
-                            for age, count in age_gt_dist.items():
-                                st.write(f"- {age}: {count}")
-                        
-                        with col2:
-                            conf_gt_dist = ground_truth_df['true_confidence_level'].value_counts()
-                            st.write("**Confidence Level Distribution:**")
-                            for conf, count in conf_gt_dist.items():
-                                st.write(f"- {conf}: {count}")
-                        
-                        # Show some examples
-                        st.write("**Sample Ground Truth Labels:**")
-                        sample_gt = ground_truth_df[[content_column, 'true_age_group', 'true_confidence_level']].head(5)
-                        st.dataframe(sample_gt)
                     
                 except Exception as e:
                     st.error(f"Error generating ground truth: {str(e)}")
@@ -1098,7 +867,6 @@ def main():
                 st.write(f"- Correct predictions: {eval_results['conf_correct']}/{eval_results['sample_size']}")
                 st.write(f"- Accuracy: {eval_results['confidence_accuracy']:.1%}")
                 
-                # Performance insights
                 if overall >= 0.8:
                     st.success("Excellent performance! The model is working very well.")
                 elif overall >= 0.6:
@@ -1108,7 +876,7 @@ def main():
     
     # Footer
     st.markdown("---")
-    st.markdown("Social Media AI Classifier - Production Ready with Evaluation")
+    st.markdown("Social Media AI Classifier - No External Dependencies")
 
 if __name__ == "__main__":
     main()
