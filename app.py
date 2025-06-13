@@ -7,7 +7,6 @@ import json
 import re
 import hashlib
 from datetime import datetime, timedelta
-import asyncio
 from typing import Dict, Optional
 
 # API clients with safe imports
@@ -84,42 +83,37 @@ class SocialMediaClassifier:
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_key: str = None):
         if openai_key and OPENAI_AVAILABLE:
             try:
-                # Try basic initialization first (most compatible)
+                # Use the most current OpenAI client setup
                 self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
-                st.success("OpenAI API connected successfully")
+                
+                # Test the connection with a simple call
+                test_response = self.models['openai'].chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=5
+                )
+                st.success("✅ OpenAI API connected and tested successfully")
+                
             except Exception as e:
-                # Try alternative initialization methods
-                try:
-                    # Some versions might need different parameters
-                    self.models['openai'] = openai.OpenAI(
-                        api_key=openai_key.strip(),
-                        max_retries=2
-                    )
-                    st.success("OpenAI API connected (alternative method)")
-                except Exception as e2:
-                    # Last resort - minimal parameters
-                    try:
-                        import openai as openai_lib
-                        openai_lib.api_key = openai_key.strip()
-                        self.models['openai'] = openai_lib
-                        st.success("OpenAI API connected (legacy method)")
-                    except Exception as e3:
-                        st.error(f"OpenAI setup failed: {e}")
-                        st.error("Try updating OpenAI library: pip install openai==1.3.3")
+                st.error(f"❌ OpenAI setup failed: {str(e)}")
+                st.info("💡 Make sure you have the latest OpenAI library: `pip install openai>=1.0.0`")
+                self.models['openai'] = None
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
             try:
                 self.models['anthropic'] = anthropic.Anthropic(api_key=anthropic_key.strip())
-                st.success("Anthropic API connected successfully")
+                st.success("✅ Anthropic API connected successfully")
             except Exception as e:
-                st.error(f"Anthropic setup failed: {e}")
+                st.error(f"❌ Anthropic setup failed: {str(e)}")
+                self.models['anthropic'] = None
         
-        if llama3_key:
+        if llama3_key and REQUESTS_AVAILABLE:
             try:
                 self.models['llama3'] = llama3_key.strip()
-                st.success("Llama 3 endpoint configured")
+                st.success("✅ Llama 3 endpoint configured")
             except Exception as e:
-                st.error(f"Llama 3 setup failed: {e}")
+                st.error(f"❌ Llama 3 setup failed: {str(e)}")
+                self.models['llama3'] = None
 
     def create_classification_prompt(self, text: str, model_type: str) -> str:
         base_prompt = f"""You are an expert social media analyst. Analyze this post and classify the author.
@@ -152,17 +146,18 @@ Score: [0.8]"""
 
         return base_prompt
 
-    async def classify_with_caching(self, text: str, model: str) -> Dict:
+    def classify_with_caching(self, text: str, model: str) -> Dict:
+        """Synchronous version without async/await"""
         cached_result = self.cache.get_api_response(text, model)
         if cached_result:
             return cached_result
         
         if model == 'openai':
-            result = await self._classify_with_openai(text)
+            result = self._classify_with_openai(text)
         elif model == 'anthropic':
-            result = await self._classify_with_anthropic(text)
+            result = self._classify_with_anthropic(text)
         elif model == 'llama3':
-            result = await self._classify_with_llama3(text)
+            result = self._classify_with_llama3(text)
         else:
             return {'error': f'Unknown model: {model}'}
         
@@ -172,32 +167,22 @@ Score: [0.8]"""
         
         return result
 
-    async def _classify_with_openai(self, text: str) -> Dict:
+    def _classify_with_openai(self, text: str) -> Dict:
         if not self.models['openai']:
-            return {'error': 'OpenAI not configured'}
+            return {'error': 'OpenAI not configured or connection failed'}
 
         try:
             prompt = self.create_classification_prompt(text, 'openai')
             
-            # Handle different OpenAI library versions
-            if hasattr(self.models['openai'], 'chat'):
-                # New OpenAI library (v1.0+)
-                response = self.models['openai'].chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=300
-                )
-                content = response.choices[0].message.content.strip()
-            else:
-                # Legacy OpenAI library or different setup
-                response = self.models['openai'].ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=300
-                )
-                content = response.choices[0].message.content.strip()
+            # Modern OpenAI API call
+            response = self.models['openai'].chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=300
+            )
+            
+            content = response.choices[0].message.content.strip()
             
             self.api_calls['openai'] += 1
             self.costs['openai'] += 0.002
@@ -205,9 +190,11 @@ Score: [0.8]"""
             return self.parse_response(content, 'OpenAI GPT-3.5')
                 
         except Exception as e:
-            return {'error': f'OpenAI error: {str(e)}'}
+            error_msg = f'OpenAI API error: {str(e)}'
+            st.error(error_msg)  # Show error in UI
+            return {'error': error_msg}
 
-    async def _classify_with_anthropic(self, text: str) -> Dict:
+    def _classify_with_anthropic(self, text: str) -> Dict:
         if not self.models['anthropic']:
             return {'error': 'Anthropic not configured'}
 
@@ -228,11 +215,13 @@ Score: [0.8]"""
             return self.parse_response(content, 'Anthropic Claude')
                 
         except Exception as e:
-            return {'error': f'Anthropic error: {str(e)}'}
+            error_msg = f'Anthropic API error: {str(e)}'
+            st.error(error_msg)
+            return {'error': error_msg}
 
-    async def _classify_with_llama3(self, text: str) -> Dict:
+    def _classify_with_llama3(self, text: str) -> Dict:
         if not self.models['llama3'] or not REQUESTS_AVAILABLE:
-            return {'error': 'Llama 3 not configured'}
+            return {'error': 'Llama 3 not configured or requests library not available'}
 
         try:
             prompt = self.create_classification_prompt(text, 'llama3')
@@ -268,10 +257,14 @@ Score: [0.8]"""
                 content = response_data['choices'][0]['message']['content'].strip()
                 return self.parse_response(content, 'Llama 3')
             else:
-                return {'error': f'Llama 3 API error: {response.status_code}'}
+                error_msg = f'Llama 3 API error: {response.status_code} - {response.text}'
+                st.error(error_msg)
+                return {'error': error_msg}
                 
         except Exception as e:
-            return {'error': f'Llama 3 error: {str(e)}'}
+            error_msg = f'Llama 3 error: {str(e)}'
+            st.error(error_msg)
+            return {'error': error_msg}
 
     def parse_response(self, content: str, model_name: str) -> Dict:
         result = {
@@ -329,7 +322,6 @@ Score: [0.8]"""
     def create_ground_truth(self, df: pd.DataFrame, content_column: str) -> pd.DataFrame:
         """Create ground truth using enhanced keyword heuristics"""
         
-        # Work with the full dataframe, don't sample
         sample_df = df.copy().reset_index(drop=True)
         sample_df['true_age_group'] = 'unknown'
         sample_df['true_confidence_level'] = 'unknown'
@@ -349,7 +341,7 @@ Score: [0.8]"""
             else:
                 sample_df.at[idx, 'true_age_group'] = 'young_adults'
             
-            # Enhanced Confidence rules - more comprehensive
+            # Enhanced Confidence rules
             low_confidence_phrases = [
                 'not good enough', 'terrible at', 'awful at', 'bad at', 'struggling with',
                 'everyone else', 'better than me', 'smarter than', 'worse than',
@@ -373,10 +365,9 @@ Score: [0.8]"""
                 'pretty good', 'not bad', 'alright', 'fine with'
             ]
             
-            # Check for confidence indicators (phrases first, then individual words)
+            # Check for confidence indicators
             confidence_assigned = False
             
-            # Check phrases first (more specific)
             for phrase in low_confidence_phrases:
                 if phrase in text:
                     sample_df.at[idx, 'true_confidence_level'] = 'low'
@@ -397,7 +388,6 @@ Score: [0.8]"""
                         confidence_assigned = True
                         break
             
-            # Fallback to individual words if no phrases matched
             if not confidence_assigned:
                 if any(word in text for word in ['terrible', 'awful', 'scared', 'worried', 'confused', 'lost', 'failing']):
                     sample_df.at[idx, 'true_confidence_level'] = 'low'
@@ -411,20 +401,17 @@ Score: [0.8]"""
     def calculate_accuracy(self, results_df: pd.DataFrame, ground_truth_df: pd.DataFrame) -> Dict:
         """Calculate accuracy metrics"""
         
-        # Safety checks
         if len(results_df) == 0:
             return {'error': 'No results to evaluate'}
         
         if len(ground_truth_df) == 0:
             return {'error': 'No ground truth data available'}
         
-        # Take the minimum length to ensure alignment
         min_length = min(len(results_df), len(ground_truth_df))
         
         if min_length == 0:
             return {'error': 'No data to compare'}
         
-        # Reset indices and trim to same length
         results_df = results_df.reset_index(drop=True).head(min_length)
         ground_truth_df = ground_truth_df.reset_index(drop=True).head(min_length)
         
@@ -725,21 +712,43 @@ def main():
         if st.button("Analyze Post"):
             results = []
             
+            # Debug info
+            st.write("**Debug Info:**")
+            st.write(f"- Use OpenAI: {use_openai}")
+            st.write(f"- OpenAI Model Available: {classifier.models['openai'] is not None}")
+            st.write(f"- Selected Text Length: {len(selected_text)}")
+            
             with st.spinner("Analyzing..."):
                 if use_openai and classifier.models['openai']:
-                    result = asyncio.run(classifier.classify_with_caching(selected_text, 'openai'))
+                    st.write("🔄 Calling OpenAI API...")
+                    result = classifier.classify_with_caching(selected_text, 'openai')
                     if 'error' not in result:
                         results.append(result)
+                        st.write("✅ OpenAI call successful")
+                    else:
+                        st.error(f"OpenAI Error: {result['error']}")
                 
                 if use_anthropic and classifier.models['anthropic']:
-                    result = asyncio.run(classifier.classify_with_caching(selected_text, 'anthropic'))
+                    st.write("🔄 Calling Anthropic API...")
+                    result = classifier.classify_with_caching(selected_text, 'anthropic')
                     if 'error' not in result:
                         results.append(result)
+                        st.write("✅ Anthropic call successful")
+                    else:
+                        st.error(f"Anthropic Error: {result['error']}")
                 
                 if use_llama3 and classifier.models['llama3']:
-                    result = asyncio.run(classifier.classify_with_caching(selected_text, 'llama3'))
+                    st.write("🔄 Calling Llama 3 API...")
+                    result = classifier.classify_with_caching(selected_text, 'llama3')
                     if 'error' not in result:
                         results.append(result)
+                        st.write("✅ Llama 3 call successful")
+                    else:
+                        st.error(f"Llama 3 Error: {result['error']}")
+            
+            if not results:
+                st.error("❌ No successful API calls. Check your API keys and model selection.")
+                return
             
             for result in results:
                 st.subheader(f"{result['model']} Results")
@@ -763,7 +772,6 @@ def main():
         sample_size = st.slider("Posts to analyze:", 1, min(100, len(df)), min(20, len(df)))
         
         if st.button("Run Batch Analysis"):
-            # Validate sample size
             max_available = len(df)
             actual_sample_size = min(sample_size, max_available)
             
@@ -782,22 +790,24 @@ def main():
             
             # Choose model
             model_to_use = None
-            if use_llama3 and classifier.models['llama3']:
-                model_to_use = 'llama3'
-            elif use_openai and classifier.models['openai']:
+            if use_openai and classifier.models['openai']:
                 model_to_use = 'openai'
             elif use_anthropic and classifier.models['anthropic']:
                 model_to_use = 'anthropic'
+            elif use_llama3 and classifier.models['llama3']:
+                model_to_use = 'llama3'
             
             if not model_to_use:
                 st.error("Please connect and select at least one model")
                 return
             
+            st.write(f"Using model: {model_to_use}")
+            
             for i, (_, row) in enumerate(sample_df.iterrows()):
                 progress_bar.progress((i + 1) / len(sample_df))
                 
                 text = row[content_column]
-                result = asyncio.run(classifier.classify_with_caching(text, model_to_use))
+                result = classifier.classify_with_caching(text, model_to_use)
                 
                 if 'error' not in result:
                     result.update({
@@ -805,6 +815,8 @@ def main():
                         'post_content': text[:100] + '...' if len(text) > 100 else text
                     })
                     results_list.append(result)
+                else:
+                    st.warning(f"Error processing row {i}: {result['error']}")
                 
                 time.sleep(0.02)
             
@@ -871,7 +883,6 @@ def main():
         st.subheader("Detailed Results")
         
         if len(results_df) > 0:
-            # Ensure columns exist before displaying
             available_columns = []
             desired_columns = ['post_content', 'age_group', 'confidence_level', 'confidence_score']
             
@@ -882,7 +893,6 @@ def main():
             if available_columns:
                 st.dataframe(results_df[available_columns])
                 
-                # Download
                 csv = results_df.to_csv(index=False)
                 st.download_button(
                     "Download Results",
@@ -922,7 +932,6 @@ def main():
         if st.button("🧪 Quick Classification Test (3 examples)"):
             st.subheader("Quick Test: AI vs Ground Truth")
             
-            # Test on 3 clear examples
             test_posts = [
                 "omg school is literally so hard everyone else gets it but i dont understand math at all",
                 "job interview tomorrow feeling confident about my career goals and skills", 
@@ -935,13 +944,10 @@ def main():
                 {'Post Content': test_posts[2]}
             ])
             
-            # Get ground truth
             gt_df = classifier.create_ground_truth(test_df, 'Post Content')
             
-            # Get AI predictions
             test_results = []
             for post in test_posts:
-                # Choose available model
                 model_to_use = None
                 if use_openai and classifier.models['openai']:
                     model_to_use = 'openai'
@@ -951,7 +957,7 @@ def main():
                     model_to_use = 'llama3'
                 
                 if model_to_use:
-                    result = asyncio.run(classifier.classify_with_caching(post, model_to_use))
+                    result = classifier.classify_with_caching(post, model_to_use)
                     if 'error' not in result:
                         test_results.append(result)
                     else:
@@ -961,7 +967,6 @@ def main():
                     st.error("Please connect at least one AI model first")
                     return
             
-            # Show comparison
             if len(test_results) == 3:
                 for i, (post, result, gt_row) in enumerate(zip(test_posts, test_results, gt_df.itertuples())):
                     st.write(f"**Test {i+1}:** *{post[:60]}...*")
@@ -977,7 +982,6 @@ def main():
                         st.write(f"- Age: {gt_row.true_age_group}")
                         st.write(f"- Confidence: {gt_row.true_confidence_level}")
                     
-                    # Show matches
                     age_match = "✅" if result['age_group'] == gt_row.true_age_group else "❌"
                     conf_match = "✅" if result['confidence_level'] == gt_row.true_confidence_level else "❌"
                     st.write(f"**Matches:** Age {age_match} | Confidence {conf_match}")
@@ -987,7 +991,6 @@ def main():
                     
                     st.write("---")
                 
-                # Quick stats
                 age_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
                                 if result['age_group'] == gt_row.true_age_group)
                 conf_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
@@ -1007,25 +1010,21 @@ def main():
         if st.button("Generate Ground Truth"):
             with st.spinner("Generating ground truth labels..."):
                 try:
-                    # Get the original dataframe that matches the analyzed posts
                     if len(results_df) == 0:
                         st.error("No results to generate ground truth for")
                         return
                     
-                    # Create a subset of original data that matches our results
                     original_indices = results_df.get('original_index', range(len(results_df)))
                     
                     try:
                         subset_df = original_df.iloc[original_indices].copy()
                     except:
-                        # Fallback: use the first N rows
                         subset_df = original_df.head(len(results_df)).copy()
                     
                     ground_truth_df = classifier.create_ground_truth(subset_df, content_column)
                     st.session_state['ground_truth'] = ground_truth_df
                     st.success(f"Ground truth generated for {len(ground_truth_df)} posts")
                     
-                    # Show ground truth distribution for debugging
                     if st.checkbox("Show Ground Truth Analysis"):
                         st.subheader("Ground Truth Distribution")
                         
@@ -1043,7 +1042,6 @@ def main():
                             for conf, count in conf_gt_dist.items():
                                 st.write(f"- {conf}: {count}")
                         
-                        # Show some examples
                         st.write("**Sample Ground Truth Labels:**")
                         sample_gt = ground_truth_df[[content_column, 'true_age_group', 'true_confidence_level']].head(5)
                         st.dataframe(sample_gt)
@@ -1087,7 +1085,6 @@ def main():
                     overall = (age_acc + conf_acc) / 2
                     st.metric("Overall Score", f"{overall:.3f}")
                 
-                # Performance breakdown
                 st.subheader("Detailed Results")
                 
                 st.write(f"**Age Group Classification:**")
@@ -1098,7 +1095,6 @@ def main():
                 st.write(f"- Correct predictions: {eval_results['conf_correct']}/{eval_results['sample_size']}")
                 st.write(f"- Accuracy: {eval_results['confidence_accuracy']:.1%}")
                 
-                # Performance insights
                 if overall >= 0.8:
                     st.success("Excellent performance! The model is working very well.")
                 elif overall >= 0.6:
@@ -1106,7 +1102,6 @@ def main():
                 else:
                     st.warning("Performance could be improved. Review prompt engineering and ground truth quality.")
     
-    # Footer
     st.markdown("---")
     st.markdown("Social Media AI Classifier - Production Ready with Evaluation")
 
