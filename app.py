@@ -91,21 +91,36 @@ class SimpleSocialMediaClassifier:
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_endpoint: str = None):
         if openai_key and OPENAI_AVAILABLE:
             try:
-                self.models['openai'] = openai.OpenAI(api_key=openai_key)
+                # OpenAI v1.0+ compatible initialization
+                self.models['openai'] = openai.OpenAI(
+                    api_key=openai_key.strip(),
+                    timeout=30.0,
+                    max_retries=2
+                )
                 st.success("✅ OpenAI API connected")
             except Exception as e:
                 st.error(f"❌ OpenAI setup failed: {e}")
+                # Try alternative initialization for older versions
+                try:
+                    self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
+                    st.success("✅ OpenAI API connected (fallback)")
+                except Exception as e2:
+                    st.error(f"❌ OpenAI fallback also failed: {e2}")
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
             try:
-                self.models['anthropic'] = anthropic.Anthropic(api_key=anthropic_key)
+                self.models['anthropic'] = anthropic.Anthropic(
+                    api_key=anthropic_key.strip(),
+                    timeout=30.0,
+                    max_retries=2
+                )
                 st.success("✅ Anthropic (Claude) API connected")
             except Exception as e:
                 st.error(f"❌ Anthropic setup failed: {e}")
         
         if llama3_endpoint:
             try:
-                self.models['llama3'] = llama3_endpoint
+                self.models['llama3'] = llama3_endpoint.strip()
                 st.success("✅ Llama 3 endpoint configured")
             except Exception as e:
                 st.error(f"❌ Llama 3 setup failed: {e}")
@@ -248,16 +263,28 @@ SCORE: [0.0-1.0]"""
 
     async def _classify_with_llama3(self, text: str) -> Dict:
         if not self.models['llama3'] or not REQUESTS_AVAILABLE:
-            return {'error': 'Llama 3 not configured'}
+            return {'error': 'Llama 3 not configured or requests library unavailable'}
 
         try:
             prompt = self.create_classification_prompt(text, 'llama3')
             
-            # Get API key from Streamlit secrets or use the provided endpoint
-            api_key = st.secrets.get('TOGETHER_API_KEY', llama3_endpoint if isinstance(llama3_endpoint, str) else '')
+            # Get API key from multiple sources
+            api_key = None
+            
+            # Try Streamlit secrets first
+            if hasattr(st, 'secrets') and 'TOGETHER_API_KEY' in st.secrets:
+                api_key = st.secrets['TOGETHER_API_KEY']
+            
+            # Try the provided endpoint parameter
+            elif self.models['llama3'] and isinstance(self.models['llama3'], str) and len(self.models['llama3']) > 10:
+                api_key = self.models['llama3']
+            
+            # Check if we have a valid API key
+            if not api_key or len(api_key.strip()) < 10:
+                return {'error': 'Together AI API key not found. Please add TOGETHER_API_KEY to Streamlit secrets or enter it in the sidebar.'}
             
             headers = {
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {api_key.strip()}",
                 "Content-Type": "application/json"
             }
             
@@ -268,24 +295,51 @@ SCORE: [0.0-1.0]"""
                 "max_tokens": 300
             }
             
+            # Make the API call with detailed error handling
             response = requests.post(
                 "https://api.together.xyz/v1/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=60  # Increased timeout
             )
             
+            # Check response status
             if response.status_code == 200:
-                self.api_calls['llama3'] += 1
-                self.costs['llama3'] += 0.0005
-                
-                content = response.json()['choices'][0]['message']['content'].strip()
-                return self.parse_response(content, 'llama3')
+                try:
+                    response_data = response.json()
+                    
+                    # Validate response structure
+                    if 'choices' not in response_data or len(response_data['choices']) == 0:
+                        return {'error': 'Invalid response structure from Together AI'}
+                    
+                    content = response_data['choices'][0]['message']['content'].strip()
+                    
+                    if not content:
+                        return {'error': 'Empty response from Llama 3'}
+                    
+                    self.api_calls['llama3'] += 1
+                    self.costs['llama3'] += 0.0005
+                    
+                    return self.parse_response(content, 'llama3')
+                    
+                except json.JSONDecodeError as e:
+                    return {'error': f'Failed to parse Together AI response: {str(e)}'}
+                    
+            elif response.status_code == 401:
+                return {'error': 'Invalid Together AI API key. Please check your TOGETHER_API_KEY.'}
+            elif response.status_code == 429:
+                return {'error': 'Rate limit exceeded. Please try again in a moment.'}
+            elif response.status_code == 500:
+                return {'error': 'Together AI server error. Please try again later.'}
             else:
-                return {'error': f'Llama 3 API error: {response.status_code}'}
+                return {'error': f'Together AI API error: {response.status_code} - {response.text[:200]}'}
                 
+        except requests.exceptions.Timeout:
+            return {'error': 'Llama 3 request timed out. Please try again.'}
+        except requests.exceptions.ConnectionError:
+            return {'error': 'Unable to connect to Together AI. Please check your internet connection.'}
         except Exception as e:
-            return {'error': f'Llama 3 error: {str(e)}'}
+            return {'error': f'Llama 3 unexpected error: {str(e)}'}
 
     def parse_response(self, content: str, model_type: str) -> Dict:
         result = {
