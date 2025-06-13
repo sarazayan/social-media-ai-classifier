@@ -85,85 +85,175 @@ class SocialMediaClassifier:
 
     def clear_proxy_settings(self):
         """Clear any proxy settings that might interfere with API calls"""
-        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']
+        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
         for var in proxy_vars:
             os.environ.pop(var, None)
+    
+    def _make_openai_request(self, api_key: str, **kwargs):
+        """Manual OpenAI API request for cases where the client fails"""
+        import requests
+        
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        if 'messages' in kwargs:
+            # Chat completion request
+            data = {
+                'model': kwargs.get('model', 'gpt-3.5-turbo'),
+                'messages': kwargs['messages'],
+                'temperature': kwargs.get('temperature', 0.1),
+                'max_tokens': kwargs.get('max_tokens', 300)
+            }
+            
+            response = requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers=headers,
+                json=data,
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"OpenAI API error: {response.status_code} - {response.text}")
+        else:
+            raise Exception("Unsupported request type")
 
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_key: str = None):
-        """Enhanced API setup with multiple fallback methods"""
+        """Enhanced API setup with targeted proxies fix"""
         
         if openai_key and OPENAI_AVAILABLE:
             self.clear_proxy_settings()  # Clear proxy settings first
             success = False
             
-            # Method 1: Modern OpenAI client (v1.0+)
+            # Check OpenAI version first
+            try:
+                openai_version = openai.__version__
+                st.info(f"🔍 Detected OpenAI version: {openai_version}")
+            except:
+                openai_version = "unknown"
+            
+            # Method 1: Ultra-basic approach (no optional parameters)
             if not success:
                 try:
-                    self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
+                    # Create client with absolute minimum parameters
+                    client = openai.OpenAI()
+                    client.api_key = openai_key.strip()
                     # Test the connection
-                    test_response = self.models['openai'].models.list()
-                    self.openai_method = 'modern'
-                    st.success("✅ OpenAI API connected successfully (modern client)")
+                    client.models.list()
+                    self.models['openai'] = client
+                    self.openai_method = 'basic'
+                    st.success("✅ OpenAI API connected successfully (basic method)")
                     success = True
-                except TypeError as e:
-                    if "'proxies'" in str(e):
-                        st.warning("Proxy parameter issue detected, trying alternative methods...")
-                    else:
-                        st.warning(f"Modern client failed: {e}")
                 except Exception as e:
-                    st.warning(f"Modern client failed: {e}")
+                    st.warning(f"Basic method failed: {e}")
             
-            # Method 2: Environment variable approach
+            # Method 2: Environment variable only
             if not success:
                 try:
                     os.environ['OPENAI_API_KEY'] = openai_key.strip()
+                    # Remove any proxy-related environment variables
+                    for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']:
+                        os.environ.pop(proxy_var, None)
+                    
+                    # Create client without any parameters that might cause issues
                     self.models['openai'] = openai.OpenAI()
                     # Test the connection
-                    test_response = self.models['openai'].models.list()
+                    self.models['openai'].models.list()
                     self.openai_method = 'env'
                     st.success("✅ OpenAI API connected successfully (environment method)")
                     success = True
                 except Exception as e:
                     st.warning(f"Environment method failed: {e}")
             
-            # Method 3: Minimal parameters
+            # Method 3: Direct attribute setting (for newer versions)
             if not success:
                 try:
-                    self.models['openai'] = openai.OpenAI(
-                        api_key=openai_key.strip(),
-                        max_retries=2,
-                        timeout=60
-                    )
+                    client = openai.OpenAI.__new__(openai.OpenAI)
+                    client.__dict__.update({
+                        'api_key': openai_key.strip(),
+                        '_base_url': 'https://api.openai.com/v1',
+                        '_timeout': 60,
+                        '_max_retries': 2
+                    })
+                    # Initialize the client
+                    openai.OpenAI.__init__(client, api_key=openai_key.strip())
                     # Test the connection
-                    test_response = self.models['openai'].models.list()
-                    self.openai_method = 'minimal'
-                    st.success("✅ OpenAI API connected successfully (minimal parameters)")
+                    client.models.list()
+                    self.models['openai'] = client
+                    self.openai_method = 'direct'
+                    st.success("✅ OpenAI API connected successfully (direct method)")
                     success = True
                 except Exception as e:
-                    st.warning(f"Minimal method failed: {e}")
+                    st.warning(f"Direct method failed: {e}")
             
-            # Method 4: Legacy OpenAI (for very old versions)
-            if not success:
+            # Method 4: Legacy OpenAI (for 0.x versions)
+            if not success and openai_version.startswith('0.'):
                 try:
-                    # Check OpenAI version
-                    openai_version = openai.__version__
-                    if openai_version.startswith('0.'):
-                        # Legacy version
-                        openai.api_key = openai_key.strip()
-                        # Test with a simple call
-                        openai.Model.list()
-                        self.models['openai'] = openai
-                        self.openai_method = 'legacy'
-                        st.success("✅ OpenAI API connected successfully (legacy mode)")
-                        success = True
-                    else:
-                        st.warning("Legacy method not applicable for this OpenAI version")
+                    # Legacy version - completely different approach
+                    openai.api_key = openai_key.strip()
+                    # Clear any base that might have proxy settings
+                    if hasattr(openai, 'api_base'):
+                        openai.api_base = 'https://api.openai.com/v1'
+                    # Test with a simple call
+                    openai.Model.list()
+                    self.models['openai'] = openai
+                    self.openai_method = 'legacy'
+                    st.success("✅ OpenAI API connected successfully (legacy v0.x)")
+                    success = True
                 except Exception as e:
                     st.warning(f"Legacy method failed: {e}")
             
+            # Method 5: Manual client creation (bypass constructor completely)
             if not success:
-                st.error("❌ All OpenAI connection methods failed. Please check your API key and internet connection.")
-                st.info("💡 Try: pip install --upgrade openai")
+                try:
+                    # Create a minimal client object manually
+                    import types
+                    client = types.SimpleNamespace()
+                    client.api_key = openai_key.strip()
+                    client.base_url = 'https://api.openai.com/v1'
+                    
+                    # Try to use the openai module functions directly
+                    import openai
+                    original_api_key = getattr(openai, 'api_key', None)
+                    openai.api_key = openai_key.strip()
+                    
+                    # Test if we can make a simple request
+                    if hasattr(openai, 'Model'):
+                        openai.Model.list()
+                        self.models['openai'] = openai
+                        self.openai_method = 'module'
+                        st.success("✅ OpenAI API connected successfully (module method)")
+                        success = True
+                    else:
+                        # For newer versions, try direct API call
+                        import requests
+                        headers = {
+                            'Authorization': f'Bearer {openai_key.strip()}',
+                            'Content-Type': 'application/json'
+                        }
+                        response = requests.get('https://api.openai.com/v1/models', headers=headers, timeout=10)
+                        if response.status_code == 200:
+                            client.make_request = lambda **kwargs: self._make_openai_request(openai_key.strip(), **kwargs)
+                            self.models['openai'] = client
+                            self.openai_method = 'manual'
+                            st.success("✅ OpenAI API connected successfully (manual method)")
+                            success = True
+                        else:
+                            raise Exception(f"API test failed with status {response.status_code}")
+                except Exception as e:
+                    st.warning(f"Manual method failed: {e}")
+            
+            if not success:
+                st.error("❌ All OpenAI connection methods failed.")
+                st.error("🔍 This suggests either:")
+                st.error("   • Invalid API key")
+                st.error("   • Network connectivity issues") 
+                st.error("   • Incompatible OpenAI library version")
+                st.info("💡 Try: pip uninstall openai && pip install openai==1.3.7")
+                st.info("💡 Or check your API key at: https://platform.openai.com/api-keys")
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
             try:
@@ -247,8 +337,29 @@ Score: [0.8]"""
                     max_tokens=300
                 )
                 content = response.choices[0].message.content.strip()
+            
+            elif self.openai_method == 'module':
+                # Using openai module directly
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300
+                )
+                content = response['choices'][0]['message']['content'].strip()
+            
+            elif self.openai_method == 'manual':
+                # Manual request method
+                response_data = self.models['openai'].make_request(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300
+                )
+                content = response_data['choices'][0]['message']['content'].strip()
+            
             else:
-                # Modern OpenAI v1.x
+                # Modern OpenAI v1.x (basic, env, direct methods)
                 response = self.models['openai'].chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[{"role": "user", "content": prompt}],
@@ -593,16 +704,61 @@ def main():
     # Show library versions
     with st.sidebar.expander("📋 System Info"):
         if OPENAI_AVAILABLE:
-            st.write(f"OpenAI: {openai.__version__}")
+            try:
+                st.write(f"OpenAI: {openai.__version__}")
+            except:
+                st.write("OpenAI: Version unknown")
         else:
             st.write("OpenAI: Not installed")
         
         if ANTHROPIC_AVAILABLE:
-            st.write(f"Anthropic: {anthropic.__version__}")
+            try:
+                st.write(f"Anthropic: {anthropic.__version__}")
+            except:
+                st.write("Anthropic: Version unknown")
         else:
             st.write("Anthropic: Not installed")
         
         st.write(f"Requests: {'Available' if REQUESTS_AVAILABLE else 'Not available'}")
+        
+        # Debug info for proxy issues
+        proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+        active_proxies = [f"{var}: {os.environ.get(var, 'None')}" for var in proxy_vars if os.environ.get(var)]
+        if active_proxies:
+            st.write("⚠️ Active proxy settings:")
+            for proxy in active_proxies:
+                st.write(f"  {proxy}")
+        else:
+            st.write("✅ No proxy settings detected")
+    
+    # Debug section for troubleshooting
+    with st.sidebar.expander("🐛 Debug Tools"):
+        if st.button("Clear All Proxy Settings"):
+            proxy_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+            cleared = []
+            for var in proxy_vars:
+                if var in os.environ:
+                    os.environ.pop(var)
+                    cleared.append(var)
+            if cleared:
+                st.success(f"Cleared: {', '.join(cleared)}")
+            else:
+                st.info("No proxy settings to clear")
+        
+        if st.button("Test OpenAI Import"):
+            try:
+                import openai
+                st.success(f"✅ OpenAI imported successfully: {openai.__version__}")
+                
+                # Test basic client creation without any parameters
+                try:
+                    test_client = openai.OpenAI.__new__(openai.OpenAI)
+                    st.success("✅ OpenAI client object created")
+                except Exception as e:
+                    st.error(f"❌ Client creation failed: {e}")
+                    
+            except Exception as e:
+                st.error(f"❌ OpenAI import failed: {e}")
     
     openai_key = st.sidebar.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key")
     anthropic_key = st.sidebar.text_input("Anthropic API Key", type="password", help="Enter your Anthropic API key")
