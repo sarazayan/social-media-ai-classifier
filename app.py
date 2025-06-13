@@ -13,8 +13,14 @@ from typing import Dict, Optional
 try:
     import openai
     OPENAI_AVAILABLE = True
+    # Get OpenAI version for compatibility
+    try:
+        OPENAI_VERSION = openai.__version__
+    except:
+        OPENAI_VERSION = "unknown"
 except ImportError:
     OPENAI_AVAILABLE = False
+    OPENAI_VERSION = "not_installed"
 
 try:
     import anthropic
@@ -72,6 +78,133 @@ class CacheManager:
             'cache_sizes': {'api_responses': len(self.api_cache)}
         }
 
+class UniversalOpenAIClient:
+    """Universal OpenAI client that works with any version"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.client = None
+        self.client_type = None
+        self.setup_client()
+    
+    def setup_client(self):
+        """Try different setup methods based on OpenAI version"""
+        
+        # Method 1: Modern OpenAI v1.0+ client
+        try:
+            self.client = openai.OpenAI(api_key=self.api_key)
+            self.client_type = "modern"
+            st.success(f"✅ OpenAI connected (Modern v1.0+ client) - Version: {OPENAI_VERSION}")
+            return
+        except Exception as e1:
+            st.warning(f"Modern client failed: {e1}")
+        
+        # Method 2: Try without extra parameters
+        try:
+            self.client = openai.OpenAI(api_key=self.api_key)
+            self.client_type = "modern_simple"
+            st.success(f"✅ OpenAI connected (Simple modern client)")
+            return
+        except Exception as e2:
+            st.warning(f"Simple modern client failed: {e2}")
+        
+        # Method 3: Legacy OpenAI client (pre-v1.0)
+        try:
+            openai.api_key = self.api_key
+            self.client = openai
+            self.client_type = "legacy"
+            st.success(f"✅ OpenAI connected (Legacy client) - Version: {OPENAI_VERSION}")
+            return
+        except Exception as e3:
+            st.warning(f"Legacy client failed: {e3}")
+        
+        # Method 4: Direct module approach
+        try:
+            import openai as openai_module
+            openai_module.api_key = self.api_key
+            self.client = openai_module
+            self.client_type = "direct"
+            st.success(f"✅ OpenAI connected (Direct module)")
+            return
+        except Exception as e4:
+            st.warning(f"Direct module failed: {e4}")
+        
+        # Method 5: Try with minimal parameters and detect version
+        try:
+            if hasattr(openai, 'OpenAI'):
+                # New style
+                self.client = openai.OpenAI()
+                self.client.api_key = self.api_key
+                self.client_type = "new_manual"
+                st.success(f"✅ OpenAI connected (New style manual)")
+                return
+            else:
+                # Old style
+                openai.api_key = self.api_key
+                self.client = openai
+                self.client_type = "old_manual"
+                st.success(f"✅ OpenAI connected (Old style manual)")
+                return
+        except Exception as e5:
+            st.error(f"All connection methods failed. Last error: {e5}")
+        
+        self.client = None
+        self.client_type = None
+    
+    def chat_completion(self, messages, model="gpt-3.5-turbo", temperature=0.1, max_tokens=300):
+        """Universal chat completion that works with any version"""
+        
+        if not self.client:
+            raise Exception("OpenAI client not initialized")
+        
+        try:
+            if self.client_type in ["modern", "modern_simple", "new_manual"]:
+                # New OpenAI v1.0+ style
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content.strip()
+            
+            elif self.client_type in ["legacy", "direct", "old_manual"]:
+                # Legacy OpenAI style
+                response = self.client.ChatCompletion.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content.strip()
+            
+            else:
+                raise Exception(f"Unknown client type: {self.client_type}")
+        
+        except Exception as e:
+            # Fallback: try both methods
+            try:
+                # Try new style
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return response.choices[0].message.content.strip()
+            except:
+                try:
+                    # Try old style
+                    response = self.client.ChatCompletion.create(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    return response.choices[0].message.content.strip()
+                except Exception as final_error:
+                    raise Exception(f"Both API styles failed. Original: {e}, Fallback: {final_error}")
+
 class SocialMediaClassifier:
     def __init__(self):
         self.models = {'openai': None, 'anthropic': None, 'llama3': None}
@@ -81,22 +214,32 @@ class SocialMediaClassifier:
         self.cache = CacheManager()
 
     def setup_apis(self, openai_key: str = None, anthropic_key: str = None, llama3_key: str = None):
+        
+        # Show OpenAI version info
+        if OPENAI_AVAILABLE:
+            st.info(f"📋 OpenAI library version: {OPENAI_VERSION}")
+        
         if openai_key and OPENAI_AVAILABLE:
             try:
-                # Use the most current OpenAI client setup
-                self.models['openai'] = openai.OpenAI(api_key=openai_key.strip())
-                
-                # Test the connection with a simple call
-                test_response = self.models['openai'].chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": "test"}],
-                    max_tokens=5
-                )
-                st.success("✅ OpenAI API connected and tested successfully")
-                
+                # Use universal client
+                universal_client = UniversalOpenAIClient(openai_key.strip())
+                if universal_client.client:
+                    self.models['openai'] = universal_client
+                    
+                    # Test the connection
+                    try:
+                        test_response = universal_client.chat_completion(
+                            messages=[{"role": "user", "content": "Hi"}],
+                            max_tokens=5
+                        )
+                        st.success(f"🎉 OpenAI API test successful! Response: '{test_response}'")
+                    except Exception as test_error:
+                        st.warning(f"⚠️ OpenAI connected but test failed: {test_error}")
+                else:
+                    st.error("❌ Failed to initialize OpenAI client with any method")
+                    
             except Exception as e:
-                st.error(f"❌ OpenAI setup failed: {str(e)}")
-                st.info("💡 Make sure you have the latest OpenAI library: `pip install openai>=1.0.0`")
+                st.error(f"❌ OpenAI setup completely failed: {str(e)}")
                 self.models['openai'] = None
         
         if anthropic_key and ANTHROPIC_AVAILABLE:
@@ -174,24 +317,23 @@ Score: [0.8]"""
         try:
             prompt = self.create_classification_prompt(text, 'openai')
             
-            # Modern OpenAI API call
-            response = self.models['openai'].chat.completions.create(
-                model="gpt-3.5-turbo",
+            # Use universal client
+            universal_client = self.models['openai']
+            content = universal_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
+                model="gpt-3.5-turbo",
                 temperature=0.1,
                 max_tokens=300
             )
             
-            content = response.choices[0].message.content.strip()
-            
             self.api_calls['openai'] += 1
             self.costs['openai'] += 0.002
             
-            return self.parse_response(content, 'OpenAI GPT-3.5')
+            return self.parse_response(content, f'OpenAI GPT-3.5 ({universal_client.client_type})')
                 
         except Exception as e:
             error_msg = f'OpenAI API error: {str(e)}'
-            st.error(error_msg)  # Show error in UI
+            st.error(error_msg)
             return {'error': error_msg}
 
     def _classify_with_anthropic(self, text: str) -> Dict:
@@ -633,6 +775,12 @@ def main():
     st.title("🚀 Social Media AI Classifier")
     st.markdown("**Multi-Model Analysis with Smart Caching and Evaluation**")
     
+    # Show library status at the top
+    if OPENAI_AVAILABLE:
+        st.info(f"🔍 OpenAI library detected: Version {OPENAI_VERSION}")
+    else:
+        st.error("❌ OpenAI library not found. Install with: `pip install openai`")
+    
     # Initialize classifier
     if 'classifier' not in st.session_state:
         st.session_state.classifier = SocialMediaClassifier()
@@ -646,8 +794,9 @@ def main():
     anthropic_key = st.sidebar.text_input("Anthropic API Key", type="password")
     llama3_key = st.sidebar.text_input("Together AI API Key", type="password")
     
-    if st.sidebar.button("Connect APIs"):
-        classifier.setup_apis(openai_key, anthropic_key, llama3_key)
+    if st.sidebar.button("🔌 Connect APIs"):
+        with st.sidebar:
+            classifier.setup_apis(openai_key, anthropic_key, llama3_key)
     
     # Cache stats
     stats = classifier.cache.get_cache_stats()
@@ -660,8 +809,14 @@ def main():
     use_anthropic = st.sidebar.checkbox("Anthropic Claude", value=False)
     use_llama3 = st.sidebar.checkbox("Llama 3", value=False)
     
+    # Connection status
+    st.sidebar.header("🔗 Connection Status")
+    st.sidebar.write(f"OpenAI: {'✅' if classifier.models['openai'] else '❌'}")
+    st.sidebar.write(f"Anthropic: {'✅' if classifier.models['anthropic'] else '❌'}")
+    st.sidebar.write(f"Llama 3: {'✅' if classifier.models['llama3'] else '❌'}")
+    
     # Main tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["Dataset", "Analysis", "Results", "Evaluation"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dataset", "🔬 Analysis", "📈 Results", "🎯 Evaluation"])
     
     with tab1:
         st.header("Dataset Management")
@@ -669,7 +824,7 @@ def main():
         uploaded_file = st.file_uploader("Upload CSV file", type="csv")
         df = load_data_cached(uploaded_file)
         
-        st.success(f"Loaded {len(df)} posts")
+        st.success(f"✅ Loaded {len(df)} posts")
         st.dataframe(df.head())
         
         st.session_state.df = df
@@ -694,10 +849,10 @@ def main():
             st.error("No content column found")
             return
         
-        st.info(f"Using column: {content_column}")
+        st.info(f"📝 Using column: **{content_column}**")
         
         # Single post analysis
-        st.subheader("Single Post Analysis")
+        st.subheader("🔍 Single Post Analysis")
         
         post_idx = st.selectbox("Select post:", range(min(len(df), 100)), format_func=lambda x: f"Post {x+1}")
         
@@ -709,79 +864,99 @@ def main():
         
         st.text_area("Post content:", selected_text, height=100)
         
-        if st.button("Analyze Post"):
+        if st.button("🚀 Analyze Post", type="primary"):
+            
+            # Pre-flight checks
+            st.write("### 🔧 System Status")
+            st.write(f"📋 OpenAI Library: {OPENAI_VERSION}")
+            st.write(f"🔑 Use OpenAI: {use_openai}")
+            st.write(f"🤖 OpenAI Available: {'✅ Yes' if classifier.models['openai'] else '❌ No'}")
+            st.write(f"📝 Text Length: {len(selected_text)} characters")
+            
+            if classifier.models['openai']:
+                st.write(f"🔧 Client Type: {classifier.models['openai'].client_type}")
+            
             results = []
             
-            # Debug info
-            st.write("**Debug Info:**")
-            st.write(f"- Use OpenAI: {use_openai}")
-            st.write(f"- OpenAI Model Available: {classifier.models['openai'] is not None}")
-            st.write(f"- Selected Text Length: {len(selected_text)}")
-            
-            with st.spinner("Analyzing..."):
+            with st.spinner("🔄 Analyzing..."):
+                
                 if use_openai and classifier.models['openai']:
-                    st.write("🔄 Calling OpenAI API...")
-                    result = classifier.classify_with_caching(selected_text, 'openai')
-                    if 'error' not in result:
-                        results.append(result)
-                        st.write("✅ OpenAI call successful")
-                    else:
-                        st.error(f"OpenAI Error: {result['error']}")
+                    st.write("### 🔄 Calling OpenAI API...")
+                    try:
+                        result = classifier.classify_with_caching(selected_text, 'openai')
+                        if 'error' not in result:
+                            results.append(result)
+                            st.success("✅ OpenAI call successful!")
+                        else:
+                            st.error(f"❌ OpenAI Error: {result['error']}")
+                    except Exception as e:
+                        st.error(f"💥 OpenAI Exception: {str(e)}")
                 
                 if use_anthropic and classifier.models['anthropic']:
-                    st.write("🔄 Calling Anthropic API...")
-                    result = classifier.classify_with_caching(selected_text, 'anthropic')
-                    if 'error' not in result:
-                        results.append(result)
-                        st.write("✅ Anthropic call successful")
-                    else:
-                        st.error(f"Anthropic Error: {result['error']}")
+                    st.write("### 🔄 Calling Anthropic API...")
+                    try:
+                        result = classifier.classify_with_caching(selected_text, 'anthropic')
+                        if 'error' not in result:
+                            results.append(result)
+                            st.success("✅ Anthropic call successful!")
+                        else:
+                            st.error(f"❌ Anthropic Error: {result['error']}")
+                    except Exception as e:
+                        st.error(f"💥 Anthropic Exception: {str(e)}")
                 
                 if use_llama3 and classifier.models['llama3']:
-                    st.write("🔄 Calling Llama 3 API...")
-                    result = classifier.classify_with_caching(selected_text, 'llama3')
-                    if 'error' not in result:
-                        results.append(result)
-                        st.write("✅ Llama 3 call successful")
-                    else:
-                        st.error(f"Llama 3 Error: {result['error']}")
+                    st.write("### 🔄 Calling Llama 3 API...")
+                    try:
+                        result = classifier.classify_with_caching(selected_text, 'llama3')
+                        if 'error' not in result:
+                            results.append(result)
+                            st.success("✅ Llama 3 call successful!")
+                        else:
+                            st.error(f"❌ Llama 3 Error: {result['error']}")
+                    except Exception as e:
+                        st.error(f"💥 Llama 3 Exception: {str(e)}")
             
             if not results:
-                st.error("❌ No successful API calls. Check your API keys and model selection.")
+                st.error("❌ No successful API calls. Please check:")
+                st.write("1. API keys are valid")
+                st.write("2. At least one model is selected")
+                st.write("3. Internet connection is working")
+                st.write("4. API credits/quota are available")
                 return
             
+            st.write("### 🎉 Results")
             for result in results:
-                st.subheader(f"{result['model']} Results")
+                st.subheader(f"🤖 {result['model']} Results")
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Age Group", result['age_group'].replace('_', ' ').title())
+                    st.metric("👥 Age Group", result['age_group'].replace('_', ' ').title())
                 with col2:
-                    st.metric("Confidence Level", result['confidence_level'].title())
+                    st.metric("💪 Confidence Level", result['confidence_level'].title())
                 with col3:
-                    st.metric("AI Confidence", f"{result['confidence_score']:.2f}")
+                    st.metric("🎯 AI Confidence", f"{result['confidence_score']:.2f}")
                 
-                st.write("**Reasoning:**", result['reasoning'])
+                st.write(f"**🧠 Reasoning:** {result['reasoning']}")
                 
                 if st.checkbox(f"Show raw response ({result['model']})", key=f"raw_{result['model']}"):
-                    st.text(result['raw_response'])
+                    st.code(result['raw_response'], language="text")
         
         # Batch analysis
-        st.subheader("Batch Analysis")
+        st.subheader("📊 Batch Analysis")
         
         sample_size = st.slider("Posts to analyze:", 1, min(100, len(df)), min(20, len(df)))
         
-        if st.button("Run Batch Analysis"):
+        if st.button("🚀 Run Batch Analysis", type="primary"):
             max_available = len(df)
             actual_sample_size = min(sample_size, max_available)
             
             if actual_sample_size < sample_size:
-                st.warning(f"Requested {sample_size} posts, but only {max_available} available. Using {actual_sample_size} posts.")
+                st.warning(f"⚠️ Requested {sample_size} posts, but only {max_available} available. Using {actual_sample_size} posts.")
             
             try:
                 sample_df = df.sample(n=actual_sample_size, random_state=42, replace=False)
             except ValueError as e:
-                st.error(f"Sampling error: {e}")
+                st.error(f"❌ Sampling error: {e}")
                 return
             
             results_list = []
@@ -798,10 +973,10 @@ def main():
                 model_to_use = 'llama3'
             
             if not model_to_use:
-                st.error("Please connect and select at least one model")
+                st.error("❌ Please connect and select at least one model")
                 return
             
-            st.write(f"Using model: {model_to_use}")
+            st.info(f"🤖 Using model: **{model_to_use}**")
             
             for i, (_, row) in enumerate(sample_df.iterrows()):
                 progress_bar.progress((i + 1) / len(sample_df))
@@ -816,7 +991,7 @@ def main():
                     })
                     results_list.append(result)
                 else:
-                    st.warning(f"Error processing row {i}: {result['error']}")
+                    st.warning(f"⚠️ Error processing row {i}: {result['error']}")
                 
                 time.sleep(0.02)
             
@@ -825,37 +1000,39 @@ def main():
             if results_list:
                 results_df = pd.DataFrame(results_list)
                 st.session_state['batch_results'] = results_df
-                st.success(f"Analyzed {len(results_df)} posts")
+                st.success(f"🎉 Successfully analyzed {len(results_df)} posts!")
+            else:
+                st.error("❌ No results obtained from batch analysis")
     
     with tab3:
-        st.header("Analysis Results")
+        st.header("📈 Analysis Results")
         
         if 'batch_results' not in st.session_state:
-            st.info("Run batch analysis first")
+            st.info("👆 Run batch analysis first")
             return
         
         results_df = st.session_state['batch_results']
         
         if len(results_df) == 0:
-            st.error("No results found. Please run batch analysis first.")
+            st.error("❌ No results found. Please run batch analysis first.")
             return
         
         # Overview
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Posts Analyzed", len(results_df))
+            st.metric("📊 Posts Analyzed", len(results_df))
         with col2:
             try:
                 most_common_age = results_df['age_group'].mode()[0] if len(results_df) > 0 else 'Unknown'
             except:
                 most_common_age = results_df['age_group'].value_counts().index[0] if len(results_df) > 0 else 'Unknown'
-            st.metric("Most Common Age", most_common_age.replace('_', ' ').title())
+            st.metric("👥 Most Common Age", most_common_age.replace('_', ' ').title())
         with col3:
             try:
                 most_common_conf = results_df['confidence_level'].mode()[0] if len(results_df) > 0 else 'Unknown'
             except:
                 most_common_conf = results_df['confidence_level'].value_counts().index[0] if len(results_df) > 0 else 'Unknown'
-            st.metric("Most Common Confidence", most_common_conf.title())
+            st.metric("💪 Most Common Confidence", most_common_conf.title())
         
         # Visualizations
         if len(results_df) > 0:
@@ -864,7 +1041,7 @@ def main():
             with col1:
                 age_dist = results_df['age_group'].value_counts()
                 if len(age_dist) > 0:
-                    fig_age = px.pie(values=age_dist.values, names=age_dist.index, title='Age Groups')
+                    fig_age = px.pie(values=age_dist.values, names=age_dist.index, title='👥 Age Groups Distribution')
                     st.plotly_chart(fig_age, use_container_width=True)
                 else:
                     st.info("No age group data to display")
@@ -872,7 +1049,7 @@ def main():
             with col2:
                 conf_dist = results_df['confidence_level'].value_counts()
                 if len(conf_dist) > 0:
-                    fig_conf = px.pie(values=conf_dist.values, names=conf_dist.index, title='Confidence Levels')
+                    fig_conf = px.pie(values=conf_dist.values, names=conf_dist.index, title='💪 Confidence Levels Distribution')
                     st.plotly_chart(fig_conf, use_container_width=True)
                 else:
                     st.info("No confidence level data to display")
@@ -880,7 +1057,7 @@ def main():
             st.warning("No data available for visualization")
         
         # Results table
-        st.subheader("Detailed Results")
+        st.subheader("📋 Detailed Results")
         
         if len(results_df) > 0:
             available_columns = []
@@ -895,28 +1072,28 @@ def main():
                 
                 csv = results_df.to_csv(index=False)
                 st.download_button(
-                    "Download Results",
+                    "📥 Download Results",
                     csv,
                     f"classification_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                     "text/csv"
                 )
             else:
-                st.error("No valid columns found in results")
+                st.error("❌ No valid columns found in results")
         else:
             st.warning("No results to display")
     
     with tab4:
-        st.header("Model Evaluation")
+        st.header("🎯 Model Evaluation")
         
         if 'batch_results' not in st.session_state:
-            st.warning("Run batch analysis first")
+            st.warning("👆 Run batch analysis first")
             return
         
         results_df = st.session_state['batch_results']
         original_df = st.session_state['df']
         
         if len(results_df) == 0:
-            st.error("No results found. Please run batch analysis first.")
+            st.error("❌ No results found. Please run batch analysis first.")
             return
         
         # Find content column
@@ -926,11 +1103,11 @@ def main():
                 content_column = col
                 break
         
-        st.info("This demo uses keyword-based ground truth. In production, use human-annotated labels.")
+        st.info("ℹ️ This demo uses keyword-based ground truth. In production, use human-annotated labels.")
         
         # Quick Test Feature
-        if st.button("🧪 Quick Classification Test (3 examples)"):
-            st.subheader("Quick Test: AI vs Ground Truth")
+        if st.button("🧪 Quick Classification Test (3 examples)", type="primary"):
+            st.subheader("🧪 Quick Test: AI vs Ground Truth")
             
             test_posts = [
                 "omg school is literally so hard everyone else gets it but i dont understand math at all",
@@ -961,10 +1138,10 @@ def main():
                     if 'error' not in result:
                         test_results.append(result)
                     else:
-                        st.error(f"Model error: {result['error']}")
+                        st.error(f"❌ Model error: {result['error']}")
                         return
                 else:
-                    st.error("Please connect at least one AI model first")
+                    st.error("❌ Please connect at least one AI model first")
                     return
             
             if len(test_results) == 3:
@@ -973,21 +1150,21 @@ def main():
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write("**AI Prediction:**")
+                        st.write("**🤖 AI Prediction:**")
                         st.write(f"- Age: {result['age_group']}")
                         st.write(f"- Confidence: {result['confidence_level']}")
                     
                     with col2:
-                        st.write("**Ground Truth:**")
+                        st.write("**✅ Ground Truth:**")
                         st.write(f"- Age: {gt_row.true_age_group}")
                         st.write(f"- Confidence: {gt_row.true_confidence_level}")
                     
                     age_match = "✅" if result['age_group'] == gt_row.true_age_group else "❌"
                     conf_match = "✅" if result['confidence_level'] == gt_row.true_confidence_level else "❌"
-                    st.write(f"**Matches:** Age {age_match} | Confidence {conf_match}")
+                    st.write(f"**🎯 Matches:** Age {age_match} | Confidence {conf_match}")
                     
                     if result['confidence_level'] != gt_row.true_confidence_level:
-                        st.write(f"**AI Reasoning:** {result['reasoning']}")
+                        st.write(f"**🧠 AI Reasoning:** {result['reasoning']}")
                     
                     st.write("---")
                 
@@ -996,22 +1173,22 @@ def main():
                 conf_correct = sum(1 for i, (result, gt_row) in enumerate(zip(test_results, gt_df.itertuples())) 
                                  if result['confidence_level'] == gt_row.true_confidence_level)
                 
-                st.write(f"**Quick Test Results:** Age: {age_correct}/3 | Confidence: {conf_correct}/3")
+                st.write(f"**🏆 Quick Test Results:** Age: {age_correct}/3 | Confidence: {conf_correct}/3")
                 
                 if conf_correct == 0:
                     st.error("⚠️ All confidence predictions wrong in quick test! The AI model may need better prompts.")
                 elif conf_correct == 3:
-                    st.success("✅ Perfect confidence detection in quick test!")
+                    st.success("🎉 Perfect confidence detection in quick test!")
                 else:
                     st.warning(f"⚠️ Mixed confidence results ({conf_correct}/3). Check specific examples above.")
         
         st.write("---")
         
-        if st.button("Generate Ground Truth"):
-            with st.spinner("Generating ground truth labels..."):
+        if st.button("🎯 Generate Ground Truth"):
+            with st.spinner("🔄 Generating ground truth labels..."):
                 try:
                     if len(results_df) == 0:
-                        st.error("No results to generate ground truth for")
+                        st.error("❌ No results to generate ground truth for")
                         return
                     
                     original_indices = results_df.get('original_index', range(len(results_df)))
@@ -1023,87 +1200,87 @@ def main():
                     
                     ground_truth_df = classifier.create_ground_truth(subset_df, content_column)
                     st.session_state['ground_truth'] = ground_truth_df
-                    st.success(f"Ground truth generated for {len(ground_truth_df)} posts")
+                    st.success(f"✅ Ground truth generated for {len(ground_truth_df)} posts")
                     
-                    if st.checkbox("Show Ground Truth Analysis"):
-                        st.subheader("Ground Truth Distribution")
+                    if st.checkbox("🔍 Show Ground Truth Analysis"):
+                        st.subheader("📊 Ground Truth Distribution")
                         
                         col1, col2 = st.columns(2)
                         
                         with col1:
                             age_gt_dist = ground_truth_df['true_age_group'].value_counts()
-                            st.write("**Age Group Distribution:**")
+                            st.write("**👥 Age Group Distribution:**")
                             for age, count in age_gt_dist.items():
                                 st.write(f"- {age}: {count}")
                         
                         with col2:
                             conf_gt_dist = ground_truth_df['true_confidence_level'].value_counts()
-                            st.write("**Confidence Level Distribution:**")
+                            st.write("**💪 Confidence Level Distribution:**")
                             for conf, count in conf_gt_dist.items():
                                 st.write(f"- {conf}: {count}")
                         
-                        st.write("**Sample Ground Truth Labels:**")
+                        st.write("**📋 Sample Ground Truth Labels:**")
                         sample_gt = ground_truth_df[[content_column, 'true_age_group', 'true_confidence_level']].head(5)
                         st.dataframe(sample_gt)
                     
                 except Exception as e:
-                    st.error(f"Error generating ground truth: {str(e)}")
-                    st.info("Try running batch analysis again first")
+                    st.error(f"❌ Error generating ground truth: {str(e)}")
+                    st.info("💡 Try running batch analysis again first")
         
         if 'ground_truth' in st.session_state:
             ground_truth_df = st.session_state['ground_truth']
             
-            if st.button("Calculate Evaluation Metrics"):
-                with st.spinner("Calculating metrics..."):
+            if st.button("📊 Calculate Evaluation Metrics"):
+                with st.spinner("🔄 Calculating metrics..."):
                     eval_results = classifier.calculate_accuracy(results_df, ground_truth_df)
                     
                     if 'error' in eval_results:
-                        st.error(eval_results['error'])
+                        st.error(f"❌ {eval_results['error']}")
                     else:
                         st.session_state['eval_results'] = eval_results
-                        st.success("Evaluation complete")
+                        st.success("✅ Evaluation complete!")
             
             if 'eval_results' in st.session_state:
                 eval_results = st.session_state['eval_results']
                 
-                st.subheader("Performance Metrics")
+                st.subheader("🏆 Performance Metrics")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
-                    st.metric("Sample Size", eval_results['sample_size'])
+                    st.metric("📊 Sample Size", eval_results['sample_size'])
                 
                 with col2:
                     age_acc = eval_results['age_accuracy']
-                    st.metric("Age Accuracy", f"{age_acc:.3f}")
+                    st.metric("👥 Age Accuracy", f"{age_acc:.3f}")
                 
                 with col3:
                     conf_acc = eval_results['confidence_accuracy']
-                    st.metric("Confidence Accuracy", f"{conf_acc:.3f}")
+                    st.metric("💪 Confidence Accuracy", f"{conf_acc:.3f}")
                 
                 with col4:
                     overall = (age_acc + conf_acc) / 2
-                    st.metric("Overall Score", f"{overall:.3f}")
+                    st.metric("🎯 Overall Score", f"{overall:.3f}")
                 
-                st.subheader("Detailed Results")
+                st.subheader("📋 Detailed Results")
                 
-                st.write(f"**Age Group Classification:**")
+                st.write(f"**👥 Age Group Classification:**")
                 st.write(f"- Correct predictions: {eval_results['age_correct']}/{eval_results['sample_size']}")
                 st.write(f"- Accuracy: {eval_results['age_accuracy']:.1%}")
                 
-                st.write(f"**Confidence Level Classification:**")
+                st.write(f"**💪 Confidence Level Classification:**")
                 st.write(f"- Correct predictions: {eval_results['conf_correct']}/{eval_results['sample_size']}")
                 st.write(f"- Accuracy: {eval_results['confidence_accuracy']:.1%}")
                 
                 if overall >= 0.8:
-                    st.success("Excellent performance! The model is working very well.")
+                    st.success("🎉 Excellent performance! The model is working very well.")
                 elif overall >= 0.6:
-                    st.info("Good performance. Consider fine-tuning prompts for improvement.")
+                    st.info("👍 Good performance. Consider fine-tuning prompts for improvement.")
                 else:
-                    st.warning("Performance could be improved. Review prompt engineering and ground truth quality.")
+                    st.warning("⚠️ Performance could be improved. Review prompt engineering and ground truth quality.")
     
     st.markdown("---")
-    st.markdown("Social Media AI Classifier - Production Ready with Evaluation")
+    st.markdown("🚀 **Social Media AI Classifier** - Universal Version Compatible with All OpenAI Library Versions")
 
 if __name__ == "__main__":
     main()
