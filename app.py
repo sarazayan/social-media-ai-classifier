@@ -359,14 +359,26 @@ def main():
         # Model selection
         st.header("🤖 Classification")
         
-        model_choice = st.radio("Choose model:", 
-                               ["OpenAI GPT-3.5", "Anthropic Claude"], 
-                               disabled=[not classifier.openai_client, not classifier.anthropic_client])
+        # Show available models
+        available_models = []
+        if classifier.openai_client:
+            available_models.append("OpenAI GPT-3.5")
+        if classifier.anthropic_client:
+            available_models.append("Anthropic Claude")
         
-        sample_size = st.slider("Number of posts to analyze:", 1, min(50, len(df)), min(20, len(df)))
+        if available_models:
+            model_choice = st.radio("Choose model:", available_models)
+            sample_size = st.slider("Number of posts to analyze:", 1, min(50, len(df)), min(20, len(df)))
+        else:
+            st.warning("⚠️ Please connect at least one API model in the sidebar first")
+            model_choice = None
+            sample_size = 20
         
         if st.button("🚀 Run Classification", type="primary"):
-            if model_choice == "OpenAI GPT-3.5" and not classifier.openai_client:
+            if not model_choice:
+                st.error("❌ Please connect an API and select a model first")
+                return
+            elif model_choice == "OpenAI GPT-3.5" and not classifier.openai_client:
                 st.error("❌ OpenAI not connected. Please add API key and connect.")
                 return
             elif model_choice == "Anthropic Claude" and not classifier.anthropic_client:
