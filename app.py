@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
 import time
@@ -225,15 +224,30 @@ def calculate_metrics(y_true, y_pred, labels):
     }
 
 def plot_confusion_matrix(y_true, y_pred, labels, title):
-    """Plot confusion matrix"""
+    """Plot confusion matrix using matplotlib only"""
     cm = confusion_matrix(y_true, y_pred, labels=labels)
     
     fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=labels, yticklabels=labels, ax=ax)
-    ax.set_title(title)
-    ax.set_ylabel('True Label')
-    ax.set_xlabel('Predicted Label')
+    im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+    ax.figure.colorbar(im, ax=ax)
+    
+    # Add text annotations
+    thresh = cm.max() / 2.
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, format(cm[i, j], 'd'),
+                   ha="center", va="center",
+                   color="white" if cm[i, j] > thresh else "black")
+    
+    ax.set(xticks=np.arange(cm.shape[1]),
+           yticks=np.arange(cm.shape[0]),
+           xticklabels=labels, yticklabels=labels,
+           title=title,
+           ylabel='True Label',
+           xlabel='Predicted Label')
+    
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    plt.tight_layout()
     return fig
 
 @st.cache_data
