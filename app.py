@@ -115,7 +115,7 @@ Reasoning: [Brief explanation of key words found]"""
         
         try:
             response = self.anthropic_client.messages.create(
-                model="claude-3-7-sonnet-20241022",
+                model="claude-3-5-sonnet-20241022",
                 max_tokens=200,
                 temperature=0.1,
                 messages=[{"role": "user", "content": self.create_prompt(text)}]
